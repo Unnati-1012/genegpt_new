@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GeneGPT</title>
+
+    <!-- 🔥 Added for Markdown rendering (required for images, bold, headings, etc.) -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+
+    <!-- HEADER -->
+    <div class="header">
+
+        <div class="header-left">
+            <img src="/static/logo.png" class="logo" alt="GeneGPT Logo">
+            <h1>GeneGPT</h1>
+        </div>
+
+        <div class="header-right">
+            <button id="theme-toggle" class="icon-btn">🌙</button>
+            <button id="clear-chat" class="icon-btn">🗑️</button>
+        </div>
+
+    </div>
+
+
+    <!-- CHAT AREA -->
+    <div class="chat-box" id="chat-box"></div>
+
+    <!-- Hidden typing indicator -->
+    <div id="typing-indicator" class="typing hidden"></div>
+
+
+    <!-- INPUT AREA -->
+    <div class="input-area">
+        <textarea id="user-input" placeholder="Send a message..." rows="1"></textarea>
+        <button id="send-btn">Send</button>
+    </div>
+
+
+    <!-- JS -->
+    <script src="/static/script.js"></script>
+
+</body>
+</html>
