@@ -28,6 +28,9 @@ from .ncbi_tools import NCBITools
 from .pdb_tools import PDBTools
 from .clinvar_tools import ClinVarTools
 
+# NEW: Import the uniprot handler for isoform queries
+from .db_handlers.uniprot_handler import fetch_uniprot as fetch_uniprot_handler
+
 # Initialize tools
 pubchem = PubChemTools()
 string_db = STRINGTools()
@@ -99,12 +102,254 @@ app.add_middleware(
 
 
 # -------------------------------------------------
+# HELPER: DETECT ISOFORM QUERY
+# -------------------------------------------------
+def _detect_isoform_query(query: str) -> tuple[bool, str | None]:
+    """
+    Detect if the user query is asking about isoforms.
+    Returns (is_isoform_query, gene_name).
+    """
+    query_lower = query.lower()
+    
+    # Check if query mentions isoforms
+    if "isoform" not in query_lower:
+        return False, None
+    
+    # Common words to exclude (not gene names)
+    exclude_words = {'all', 'the', 'of', 'for', 'and', 'or', 'are', 'is', 'what', 'which', 
+                     'show', 'list', 'get', 'display', 'other', 'more', 'different', 
+                     'multiple', 'any', 'there', 'does', 'do', 'have', 'has', 'how', 'many',
+                     'isoform', 'isoforms'}
+    
+    # Pattern 1: "GENE isoforms" or "GENE all isoforms" - gene at the START
+    match = re.match(r'^([a-zA-Z][a-zA-Z0-9]+)\s+(?:all\s+)?isoforms?', query, re.IGNORECASE)
+    if match:
+        gene_name = match.group(1).strip().upper()
+        if gene_name.lower() not in exclude_words and len(gene_name) >= 2:
+            print(f"[DEBUG] Isoform query detected: gene={gene_name}")
+            return True, gene_name
+    
+    # Pattern 2: "isoforms of GENE"
+    match = re.search(r'isoforms?\s+(?:of|for)\s+([a-zA-Z][a-zA-Z0-9]+)', query, re.IGNORECASE)
+    if match:
+        gene_name = match.group(1).strip().upper()
+        if gene_name.lower() not in exclude_words and len(gene_name) >= 2:
+            print(f"[DEBUG] Isoform query detected: gene={gene_name}")
+            return True, gene_name
+    
+    # Pattern 3: "GENE isoform 2" - specific isoform
+    match = re.search(r'([a-zA-Z][a-zA-Z0-9]+)\s+isoform\s*(\d+)?', query, re.IGNORECASE)
+    if match:
+        gene_name = match.group(1).strip().upper()
+        if gene_name.lower() not in exclude_words and len(gene_name) >= 2:
+            print(f"[DEBUG] Isoform query detected: gene={gene_name}")
+            return True, gene_name
+    
+    # Pattern 4: "isoform 2 of GENE"
+    match = re.search(r'isoform\s*(\d+)?\s+(?:of|for)\s+([a-zA-Z][a-zA-Z0-9]+)', query, re.IGNORECASE)
+    if match:
+        gene_name = match.group(2).strip().upper()
+        if gene_name.lower() not in exclude_words and len(gene_name) >= 2:
+            print(f"[DEBUG] Isoform query detected: gene={gene_name}")
+            return True, gene_name
+    
+    # Fallback: Find any word that looks like a gene name
+    words = query.split()
+    for word in words:
+        word_clean = re.sub(r'[^a-zA-Z0-9]', '', word).upper()
+        if word_clean and len(word_clean) >= 2 and word_clean.lower() not in exclude_words:
+            # Check if it looks like a gene name (has letters and possibly numbers)
+            if re.match(r'^[A-Z][A-Z0-9]*$', word_clean):
+                print(f"[DEBUG] Isoform query detected (fallback): gene={word_clean}")
+                return True, word_clean
+    
+    return False, None
+
+
+# -------------------------------------------------
+# HELPER: DETECT UNIPROT ACCESSION ID
+# -------------------------------------------------
+def _detect_uniprot_accession(query: str) -> str | None:
+    """
+    Detect if the query contains a UniProt accession ID.
+    UniProt accession patterns: P31749, Q9Y6K9, O00141, A0A024R1R8
+    Returns the accession ID if found, None otherwise.
+    """
+    # UniProt accession pattern: 
+    # [OPQ][0-9][A-Z0-9]{3}[0-9] or [A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2}
+    # Simplified: 6-10 alphanumeric starting with letter, containing numbers
+    patterns = [
+        r'\b([OPQ][0-9][A-Z0-9]{3}[0-9])\b',  # Primary accession like P31749
+        r'\b([A-NR-Z][0-9][A-Z][A-Z0-9]{2}[0-9])\b',  # Like A0A024
+        r'\b([A-Z][0-9][A-Z0-9]{3}[0-9])\b',  # General 6-char pattern
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, query.upper())
+        if match:
+            accession = match.group(1)
+            # Validate it's not a common word
+            if len(accession) >= 6 and accession[1].isdigit():
+                return accession
+    
+    return None
+
+
+# -------------------------------------------------
+# HELPER: EXTRACT GENE/PROTEIN FROM CONVERSATION CONTEXT
+# -------------------------------------------------
+def _extract_gene_from_context(messages: list[dict]) -> str | None:
+    """
+    Extract the most recently discussed gene/protein/PDB ID from conversation history.
+    Used when user asks vague follow-up questions like "everything", "more", "functions",
+    or pronoun-based questions like "what is the name of this protein?"
+    """
+    # Common gene name patterns
+    gene_pattern = r'\b([A-Z][A-Z0-9]{1,9})\b'
+    # PDB ID pattern (4 alphanumeric characters, typically starts with digit)
+    pdb_pattern = r'\b([0-9][A-Z0-9]{3})\b'
+    # UniProt accession pattern
+    uniprot_pattern = r'\b([A-Z][0-9][A-Z0-9]{3}[0-9])\b'
+    
+    exclude_words = {'THE', 'AND', 'FOR', 'ARE', 'YOU', 'CAN', 'WHAT', 'HOW', 'SHOW', 
+                     'TELL', 'GIVE', 'GET', 'ALL', 'MORE', 'INFO', 'DATA', 'ABOUT',
+                     'THIS', 'THAT', 'WITH', 'FROM', 'HAVE', 'HAS', 'DOES', 'WILL',
+                     'WOULD', 'COULD', 'SHOULD', 'PLEASE', 'THANKS', 'HELLO', 'GENE',
+                     'PROTEIN', 'FUNCTION', 'STRUCTURE', 'SEQUENCE', 'ISOFORM', 'PDB',
+                     'SOURCE', 'HTTP', 'HTTPS', 'WWW', 'ORG', 'COM', 'UNIPROT'}
+    
+    # Look through messages in reverse order (most recent first)
+    for msg in reversed(messages[:-1]):  # Exclude current message
+        content = msg.get("content", "")
+        content_upper = content.upper()
+        
+        # First check for PDB IDs (like 1A1U)
+        pdb_matches = re.findall(pdb_pattern, content_upper)
+        for match in pdb_matches:
+            if match not in exclude_words:
+                return match
+        
+        # Check for UniProt accessions (like P31749)
+        uniprot_matches = re.findall(uniprot_pattern, content_upper)
+        for match in uniprot_matches:
+            if match not in exclude_words:
+                return match
+        
+        # Find potential gene names
+        matches = re.findall(gene_pattern, content_upper)
+        for match in matches:
+            if match not in exclude_words and len(match) >= 2:
+                # Validate it looks like a gene name (not just any word)
+                # Common gene patterns: TP53, BRCA1, EGFR, AKT1, etc.
+                if re.match(r'^[A-Z]+[0-9]*$', match) or re.match(r'^[A-Z][A-Z0-9]+$', match):
+                    return match
+    
+    return None
+
+
+# -------------------------------------------------
 # HELPER: PROCESS A SINGLE QUERY (using intelligent routing)
 # -------------------------------------------------
 async def process_single_query(msg: str, messages: list[dict]):
     """
     Process a single query using LLM-based intelligent routing.
     """
+    # Step 0a: Check for UniProt accession ID query - direct routing
+    accession = _detect_uniprot_accession(msg)
+    if accession:
+        logger.info(f"UniProt accession detected: {accession}")
+        print(f"[DEBUG] UniProt accession detected: {accession}")
+        db_result = fetch_uniprot_handler(accession)
+        if db_result.success and db_result.data:
+            # Check if user is asking about isoforms of this accession
+            if "isoform" in msg.lower():
+                from .db_handlers.uniprot_handler import _add_all_isoforms_data
+                db_result.data = _add_all_isoforms_data(db_result.data, accession)
+                if "all_isoforms_data" in db_result.data and db_result.data["all_isoforms_data"]:
+                    final_answer = _format_all_isoforms_response(db_result.data)
+                    return {"reply": final_answer, "html": None}
+            # Otherwise, generate answer with the data
+            logger.llm_call("answer_generation", llm.generation_model)
+            final_answer = await llm.generate_answer_with_data(msg, db_result, messages)
+            return {"reply": final_answer, "html": None}
+    
+    # Step 0b: Handle vague/pronoun-based queries by extracting context
+    msg_lower = msg.lower().strip()
+    vague_words = {'everything', 'all', 'more', 'details', 'info', 'functions', 'function', 
+                   'diseases', 'disease', 'tell me more', 'show me', 'what about'}
+    
+    # Pronoun patterns that indicate referring to something from context
+    pronoun_patterns = [
+        r'\bthis protein\b', r'\bthat protein\b', r'\bthe protein\b',
+        r'\bthis gene\b', r'\bthat gene\b', r'\bthe gene\b',
+        r'\bits?\b.*\b(function|structure|sequence|domain|isoform)',  # "its function", "it's structure"
+        r'\bwhat is (this|that|it)\b',
+        r'\bname of (this|that|the)\b',
+        r'\babout (this|that|it)\b',
+        r'\b(this|that|it) (is|does|has)\b',
+    ]
+    
+    is_pronoun_query = any(re.search(p, msg_lower) for p in pronoun_patterns)
+    is_vague_query = msg_lower in vague_words or any(msg_lower == w for w in vague_words)
+    
+    if is_pronoun_query or is_vague_query:
+        context_gene = _extract_gene_from_context(messages)
+        if context_gene:
+            logger.info(f"Context-based query '{msg}' - using context gene: {context_gene}")
+            print(f"[DEBUG] Context query, using context gene: {context_gene}")
+            # Fetch data for the context gene
+            db_result = fetch_uniprot_handler(context_gene)
+            if db_result.success and db_result.data:
+                logger.llm_call("answer_generation", llm.generation_model)
+                # Enhance the query with context
+                enhanced_msg = f"{msg} (referring to {context_gene})"
+                final_answer = await llm.generate_answer_with_data(enhanced_msg, db_result, messages)
+                return {"reply": final_answer, "html": None}
+    
+    # Step 0c: Check for isoform query - bypass LLM entirely for these
+    is_isoform_query, gene_name = _detect_isoform_query(msg)
+    print(f"[DEBUG] process_single_query: is_isoform_query={is_isoform_query}, gene_name={gene_name}")
+    
+    if is_isoform_query and gene_name:
+        logger.info(f"Isoform query detected for gene: {gene_name}")
+        print(f"[DEBUG] Calling fetch_uniprot_handler with msg='{msg}'")
+        # Use the handler to fetch isoform data with full query
+        db_result = fetch_uniprot_handler(msg)  # Pass full query to detect all vs specific isoform
+        print(f"[DEBUG] db_result.success={db_result.success}")
+        
+        if db_result.success and db_result.data:
+            print(f"[DEBUG] DB result keys: {list(db_result.data.keys())}")
+            print(f"[DEBUG] isoforms in data: {'isoforms' in db_result.data}")
+            print(f"[DEBUG] all_isoforms_data in data: {'all_isoforms_data' in db_result.data}")
+            logger.info(f"DB result keys: {list(db_result.data.keys())}")
+            
+            # Check for ALL isoforms request
+            if "all_isoforms_data" in db_result.data and db_result.data["all_isoforms_data"]:
+                final_answer = _format_all_isoforms_response(db_result.data)
+                logger.info("All isoforms query - using direct formatting (bypassing LLM)")
+                return {"reply": final_answer, "html": None}
+            # Check for specific isoform request
+            if "requested_isoform" in db_result.data:
+                final_answer = _format_isoform_response(db_result.data)
+                logger.info("Specific isoform query - using direct formatting (bypassing LLM)")
+                return {"reply": final_answer, "html": None}
+            
+            # FALLBACK: If we detected an isoform query but data wasn't populated, 
+            # force-fetch and add isoform data
+            logger.info(f"Isoform query but no isoform data found, forcing fetch...")
+            from .db_handlers.uniprot_handler import _add_all_isoforms_data
+            accession = db_result.data.get("accession", "")
+            if accession:
+                db_result.data = _add_all_isoforms_data(db_result.data, accession)
+                if "all_isoforms_data" in db_result.data and db_result.data["all_isoforms_data"]:
+                    final_answer = _format_all_isoforms_response(db_result.data)
+                    logger.info("Isoform query - showing all isoforms after force-fetch (bypassing LLM)")
+                    return {"reply": final_answer, "html": None}
+                else:
+                    # Even if no isoforms found, show what we have
+                    final_answer = f"No alternative isoforms found for {gene_name} in UniProt. The canonical sequence is shown above."
+                    return {"reply": final_answer, "html": None}
+    
     # Step 1: Classify the query using LLM with structured output
     logger.llm_call("query_classification", llm.routing_model)
     classification = await llm.classify_query(msg, messages)
@@ -139,17 +384,189 @@ async def process_single_query(msg: str, messages: list[dict]):
     else:
         logger.database_result(classification.db_type, False, error=db_result.error)
 
-    # Step 4: Generate final answer using LLM with retrieved data
+    # Step 4: Check if this is an isoform query - bypass LLM entirely with direct formatting
+    if db_result.success and db_result.data:
+        # Check for ALL isoforms request
+        if "all_isoforms_data" in db_result.data:
+            final_answer = _format_all_isoforms_response(db_result.data)
+            logger.info("All isoforms query - using direct formatting (bypassing LLM)")
+            return {"reply": final_answer, "html": None}
+        # Check for specific isoform request
+        if "requested_isoform" in db_result.data:
+            final_answer = _format_isoform_response(db_result.data)
+            logger.info("Isoform query - using direct formatting (bypassing LLM)")
+            return {"reply": final_answer, "html": None}
+
+    # Step 5: Generate final answer using LLM with retrieved data
     logger.llm_call("answer_generation", llm.generation_model)
     final_answer = await llm.generate_answer_with_data(msg, db_result, messages)
     logger.llm_response("answer_generation", len(final_answer))
     
-    # Step 5: Build HTML for structured display (only if relevant to query)
+    # Step 6: Build HTML for structured display (only if relevant to query)
     html = None
     if db_result.success and db_result.data:
         html = _build_html_for_result(classification.db_type, db_result.data, msg)
     
     return {"reply": final_answer, "html": html}
+
+
+def _format_isoform_response(data: dict) -> str:
+    """
+    Format isoform data directly without LLM to avoid hallucination.
+    Shows the requested isoform details AND lists all available isoforms.
+    """
+    import requests
+    
+    isoform = data.get("requested_isoform", {})
+    gene_name = data.get("gene_name", "Unknown")
+    protein_name = data.get("protein_name", "Unknown protein")
+    accession = data.get("accession", "")
+    all_isoforms = data.get("isoforms", [])
+    
+    # Check for errors
+    if "error" in isoform:
+        return f"**Error**: {isoform['error']}"
+    
+    if data.get("requested_isoform_error"):
+        return f"**Error**: {data['requested_isoform_error']}"
+    
+    # Build clean response for the requested isoform
+    uniprot_id = isoform.get("uniprot_id", "N/A")
+    name = isoform.get("name", "N/A")
+    seq_length = isoform.get("sequence_length", 0)
+    sequence = isoform.get("sequence", "")
+    isoform_num = isoform.get("number", "")
+    synonyms = isoform.get("synonyms", [])
+    note = isoform.get("note", "")
+    
+    response = f"""## {gene_name} Isoform {isoform_num} ({uniprot_id})
+
+**Protein:** {protein_name}
+
+| Property | Value |
+|----------|-------|
+| **UniProt ID** | {uniprot_id} |
+| **Isoform Name** | {name} |
+| **Sequence Length** | {seq_length} amino acids |"""
+    
+    if synonyms:
+        response += f"\n| **Synonyms** | {', '.join(synonyms)} |"
+    
+    if note:
+        response += f"\n\n**Note:** {note}"
+    
+    response += f"""
+
+### Sequence
+```
+{sequence}
+```
+
+---
+
+## All Available Isoforms for {gene_name}
+
+{gene_name} has **{len(all_isoforms)} isoform(s)**:
+
+| # | Isoform ID | Name | Length | Status |
+|---|------------|------|--------|--------|"""
+    
+    # Fetch all isoform sequences to get their lengths
+    for idx, iso in enumerate(all_isoforms, 1):
+        iso_ids = iso.get("ids", [])
+        iso_id = iso_ids[0] if iso_ids else "N/A"
+        iso_name = iso.get("name", f"Isoform {idx}")
+        iso_status = iso.get("sequence_status", "Unknown")
+        
+        # Try to fetch sequence length for each isoform
+        iso_length = "N/A"
+        if iso_id != "N/A":
+            try:
+                fasta_url = f"https://rest.uniprot.org/uniprotkb/{iso_id}.fasta"
+                r = requests.get(fasta_url, timeout=5)
+                if r.status_code == 200:
+                    lines = r.text.strip().split('\n')
+                    seq = ''.join(lines[1:]) if len(lines) > 1 else ""
+                    iso_length = f"{len(seq)} aa"
+            except:
+                iso_length = "N/A"
+        
+        # Mark the currently requested isoform
+        marker = "→" if idx == isoform_num else ""
+        response += f"\n| {marker}{idx} | {iso_id} | {iso_name} | {iso_length} | {iso_status} |"
+    
+    response += f"""
+
+---
+**Source:** [UniProt](https://www.uniprot.org/uniprotkb/{accession})"""
+    
+    return response
+
+
+def _format_all_isoforms_response(data: dict) -> str:
+    """
+    Format ALL isoforms data when user asks about all isoforms of a gene.
+    Shows complete sequence information for every available isoform.
+    """
+    gene_name = data.get("gene_name", "Unknown")
+    protein_name = data.get("protein_name", "Unknown protein")
+    accession = data.get("accession", "")
+    all_isoforms = data.get("all_isoforms_data", [])
+    
+    if not all_isoforms:
+        error = data.get("all_isoforms_error", "No isoforms found")
+        return f"**Error:** {error}"
+    
+    response = f"""## All Isoforms of {gene_name}
+
+**Protein:** {protein_name}  
+**UniProt Accession:** {accession}  
+**Total Isoforms:** {len(all_isoforms)}
+
+---
+"""
+    
+    for iso in all_isoforms:
+        iso_num = iso.get("number", "?")
+        iso_id = iso.get("uniprot_id", "N/A")
+        iso_name = iso.get("name", f"Isoform {iso_num}")
+        seq_length = iso.get("sequence_length", 0)
+        sequence = iso.get("sequence", "")
+        synonyms = iso.get("synonyms", [])
+        note = iso.get("note", "")
+        status = iso.get("sequence_status", "Unknown")
+        
+        response += f"""### Isoform {iso_num}: {iso_name} ({iso_id})
+
+| Property | Value |
+|----------|-------|
+| **UniProt ID** | {iso_id} |
+| **Sequence Length** | {seq_length} amino acids |
+| **Status** | {status} |"""
+        
+        if synonyms:
+            response += f"\n| **Synonyms** | {', '.join(synonyms)} |"
+        
+        if note:
+            response += f"\n\n**Note:** {note}"
+        
+        if sequence:
+            response += f"""
+
+**Sequence:**
+```
+{sequence}
+```
+"""
+        else:
+            response += "\n\n**Sequence:** Not available\n"
+        
+        response += "\n---\n"
+    
+    response += f"""
+**Source:** [UniProt](https://www.uniprot.org/uniprotkb/{accession})"""
+    
+    return response
 
 
 # -------------------------------------------------

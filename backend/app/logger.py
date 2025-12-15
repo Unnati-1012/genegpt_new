@@ -96,35 +96,54 @@ class GeneGPTLogger:
     # GENERAL LOGGING
     # ===========================================
     
-    def debug(self, message: str):
+    def debug(self, message: str) -> None:
+        """Log a debug message."""
         self.logger.debug(message)
     
-    def info(self, message: str):
+    def info(self, message: str) -> None:
+        """Log an informational message."""
         self.logger.info(message)
     
-    def warning(self, message: str):
+    def warning(self, message: str) -> None:
+        """Log a warning message."""
         self.logger.warning(message)
     
-    def error(self, message: str):
+    def error(self, message: str) -> None:
+        """Log an error message."""
         self.logger.error(message)
     
-    def critical(self, message: str):
+    def critical(self, message: str) -> None:
+        """Log a critical error message."""
         self.logger.critical(message)
     
     # ===========================================
     # SPECIALIZED LOGGING METHODS
     # ===========================================
     
-    def incoming_request(self, endpoint: str, message: str):
-        """Log an incoming API request."""
+    def incoming_request(self, endpoint: str, message: str) -> None:
+        """
+        Log an incoming API request.
+        
+        Args:
+            endpoint: API endpoint path (e.g., "/chat")
+            message: The request message/query (truncated to 100 chars)
+        """
         self.logger.info(
             f"{Colors.BRIGHT_MAGENTA}📩 INCOMING{Colors.RESET} "
             f"[{Colors.CYAN}{endpoint}{Colors.RESET}] "
             f"{Colors.WHITE}{message[:100]}{'...' if len(message) > 100 else ''}{Colors.RESET}"
         )
     
-    def query_classification(self, query_type: str, db_type: Optional[str], search_term: Optional[str], needs_clarification: bool = False):
-        """Log query classification results."""
+    def query_classification(self, query_type: str, db_type: Optional[str], search_term: Optional[str], needs_clarification: bool = False) -> None:
+        """
+        Log query classification results from the LLM.
+        
+        Args:
+            query_type: "general" or "medical"
+            db_type: Target database (e.g., "uniprot", "pdb") or None
+            search_term: Extracted search term or None
+            needs_clarification: Whether the query needs user clarification
+        """
         if query_type == "general":
             self.logger.info(
                 f"{Colors.BRIGHT_YELLOW}🏷️  CLASSIFIED{Colors.RESET} "
@@ -144,8 +163,15 @@ class GeneGPTLogger:
                 f"| term={Colors.GREEN}{search_term}{Colors.RESET}"
             )
     
-    def database_hit(self, db_name: str, search_term: str, sub_command: Optional[str] = None):
-        """Log when a database is being queried."""
+    def database_hit(self, db_name: str, search_term: str, sub_command: Optional[str] = None) -> None:
+        """
+        Log when a database is being queried.
+        
+        Args:
+            db_name: Database identifier (e.g., "uniprot", "pdb")
+            search_term: The search query being sent
+            sub_command: Optional sub-command (e.g., "mmcif", "pubmed")
+        """
         db_colors = {
             "uniprot": Colors.BRIGHT_BLUE,
             "string": Colors.BRIGHT_GREEN,
@@ -168,8 +194,16 @@ class GeneGPTLogger:
             f"| query={Colors.WHITE}'{search_term}'{Colors.RESET}"
         )
     
-    def database_result(self, db_name: str, success: bool, record_count: Optional[int] = None, error: Optional[str] = None):
-        """Log database query result."""
+    def database_result(self, db_name: str, success: bool, record_count: Optional[int] = None, error: Optional[str] = None) -> None:
+        """
+        Log database query result.
+        
+        Args:
+            db_name: Database identifier
+            success: Whether the query succeeded
+            record_count: Number of records returned (if successful)
+            error: Error message (if failed)
+        """
         if success:
             count_str = f" | records={record_count}" if record_count is not None else ""
             self.logger.info(
@@ -182,40 +216,70 @@ class GeneGPTLogger:
                 f"[{db_name.upper()}] error={error}"
             )
     
-    def llm_call(self, purpose: str, model: str):
-        """Log LLM API call."""
+    def llm_call(self, purpose: str, model: str) -> None:
+        """
+        Log LLM API call initiation.
+        
+        Args:
+            purpose: Purpose of the call (e.g., "query_classification", "answer_generation")
+            model: Model name being used
+        """
         self.logger.info(
             f"{Colors.BRIGHT_MAGENTA}🤖 LLM CALL{Colors.RESET} "
             f"purpose={Colors.YELLOW}{purpose}{Colors.RESET} "
             f"| model={Colors.CYAN}{model}{Colors.RESET}"
         )
     
-    def llm_response(self, purpose: str, tokens_hint: Optional[int] = None):
-        """Log LLM response received."""
+    def llm_response(self, purpose: str, tokens_hint: Optional[int] = None) -> None:
+        """
+        Log LLM response received.
+        
+        Args:
+            purpose: Purpose of the call
+            tokens_hint: Approximate character count of response
+        """
         tokens_str = f" | ~{tokens_hint} chars" if tokens_hint else ""
         self.logger.info(
             f"{Colors.BRIGHT_GREEN}✨ LLM RESPONSE{Colors.RESET} "
             f"purpose={Colors.YELLOW}{purpose}{Colors.RESET}{tokens_str}"
         )
     
-    def router_decision(self, from_source: str, to_target: str, reason: str = ""):
-        """Log routing decisions."""
+    def router_decision(self, from_source: str, to_target: str, reason: str = "") -> None:
+        """
+        Log routing decisions.
+        
+        Args:
+            from_source: Source of the routing decision
+            to_target: Target destination
+            reason: Optional reason for the routing
+        """
         reason_str = f" ({reason})" if reason else ""
         self.logger.debug(
             f"{Colors.CYAN}🔄 ROUTE{Colors.RESET} "
             f"{from_source} → {Colors.GREEN}{to_target}{Colors.RESET}{reason_str}"
         )
     
-    def response_sent(self, has_html: bool = False, reply_length: int = 0):
-        """Log when response is sent back to client."""
+    def response_sent(self, has_html: bool = False, reply_length: int = 0) -> None:
+        """
+        Log when response is sent back to client.
+        
+        Args:
+            has_html: Whether the response contains HTML content
+            reply_length: Length of the text reply
+        """
         html_str = f" | {Colors.CYAN}+HTML{Colors.RESET}" if has_html else ""
         self.logger.info(
             f"{Colors.BRIGHT_GREEN}📤 RESPONSE SENT{Colors.RESET} "
             f"reply_length={reply_length}{html_str}"
         )
     
-    def separator(self, title: str = ""):
-        """Print a visual separator for readability."""
+    def separator(self, title: str = "") -> None:
+        """
+        Print a visual separator for readability in logs.
+        
+        Args:
+            title: Optional title to display in the separator
+        """
         if title:
             self.logger.info(
                 f"{Colors.BRIGHT_BLUE}{'─' * 20} {title} {'─' * 20}{Colors.RESET}"

@@ -1,6 +1,35 @@
+# backend/app/pdb_tools.py
+"""
+Protein Data Bank (PDB) API tools for GeneGPT.
+
+Provides access to 3D protein structure data from RCSB PDB.
+API Documentation: https://data.rcsb.org/
+"""
+
 import requests
+from typing import Dict, Any, List, Optional
+
 
 class PDBTools:
+    """
+    Client for RCSB Protein Data Bank API.
+    
+    Provides methods for:
+    - Fetching PDB entry metadata
+    - Downloading mmCIF structure files
+    - Searching by UniProt ID, gene name, or text
+    - Fetching ligand information
+    
+    Includes fallback mapping for well-known gene structures when API fails.
+    
+    Attributes:
+        BASE_SUMMARY: URL for PDB entry metadata
+        BASE_MMCIF: URL for structure file downloads
+        BASE_SEARCH: URL for PDB search API
+        BASE_LIGAND: URL for ligand information
+        KNOWN_PDB_MAP: Fallback mapping of gene names to known PDB IDs
+    """
+    
     BASE_SUMMARY = "https://data.rcsb.org/rest/v1/core/entry/"
     BASE_MMCIF = "https://files.rcsb.org/download/"
     BASE_SEARCH = "https://search.rcsb.org/rcsbsearch/v2/query"
@@ -42,8 +71,21 @@ class PDBTools:
         except Exception:
             return None
 
-    # 1. Fetch metadata for a PDB entry
-    def pdb_fetch_entry(self, pdb_id: str):
+    def pdb_fetch_entry(self, pdb_id: str) -> Dict[str, Any]:
+        """
+        Fetch metadata for a PDB entry.
+        
+        Args:
+            pdb_id: 4-character PDB ID (e.g., "1TUP", "4OBE")
+            
+        Returns:
+            Dict containing PDB entry metadata including:
+            - struct.title: Structure title
+            - rcsb_entry_info: Entry information
+            - polymer_entities: Information about protein chains
+            
+            Or {"error": str} if not found
+        """
         pdb_id = pdb_id.lower()
         url = f"{self.BASE_SUMMARY}{pdb_id}"
         r = self._safe_request('get', url)
@@ -51,8 +93,20 @@ class PDBTools:
             return r.json()
         return {"error": f"PDB entry {pdb_id} not found or connection failed"}
 
-    # 2. Download mmCIF structure file
-    def pdb_fetch_mmcif(self, pdb_id: str):
+    def pdb_fetch_mmcif(self, pdb_id: str) -> Dict[str, Any]:
+        """
+        Download mmCIF structure file for a PDB entry.
+        
+        Args:
+            pdb_id: 4-character PDB ID (e.g., "1TUP")
+            
+        Returns:
+            Dict containing:
+            - pdb_id: The queried PDB ID
+            - mmcif: The mmCIF file content as text
+            
+            Or {"error": str} if not found
+        """
         pdb_id = pdb_id.lower()
         url = f"{self.BASE_MMCIF}{pdb_id}.cif"
         r = self._safe_request('get', url)
@@ -60,8 +114,20 @@ class PDBTools:
             return {"pdb_id": pdb_id, "mmcif": r.text}
         return {"error": f"mmCIF for {pdb_id} not found"}
 
-    # 3. Search for PDB IDs linked to a UniProt accession
-    def pdb_search_by_uniprot(self, uniprot_id: str):
+    def pdb_search_by_uniprot(self, uniprot_id: str) -> Dict[str, Any]:
+        """
+        Search for PDB entries linked to a UniProt accession.
+        
+        Args:
+            uniprot_id: UniProt accession (e.g., "P04637" for TP53)
+            
+        Returns:
+            Dict containing:
+            - uniprot_id: The queried UniProt ID
+            - pdb_ids: List of associated PDB IDs
+            
+            Or {"error": str} if search fails
+        """
         query = {
             "query": {
                 "type": "terminal",
@@ -87,8 +153,16 @@ class PDBTools:
         """Return known PDB IDs for common genes."""
         return self.KNOWN_PDB_MAP.get(gene_name.upper(), [])
 
-    # 4. Fetch ligands for a PDB entry
-    def pdb_fetch_ligands(self, pdb_id: str):
+    def pdb_fetch_ligands(self, pdb_id: str) -> Dict[str, Any]:
+        """
+        Fetch ligand information for a PDB entry.
+        
+        Args:
+            pdb_id: 4-character PDB ID
+            
+        Returns:
+            Dict containing ligand information or {"error": str} if not found
+        """
         pdb_id = pdb_id.lower()
         url = f"{self.BASE_LIGAND}{pdb_id}"
         r = self._safe_request('get', url)
@@ -96,9 +170,25 @@ class PDBTools:
             return r.json()
         return {"error": f"No ligands found for {pdb_id}"}
 
-    # 5. Search for PDB entries by gene name or protein name (text search)
-    def pdb_search_by_text(self, query: str, max_results: int = 5):
-        """Search PDB by gene name, protein name, or any text."""
+    def pdb_search_by_text(self, query: str, max_results: int = 5) -> Dict[str, Any]:
+        """
+        Search PDB by gene name, protein name, or free text.
+        
+        Uses both exact gene name matching and full-text search,
+        returning the most recently deposited structures.
+        
+        Args:
+            query: Search term (gene symbol, protein name, or keywords)
+            max_results: Maximum number of results to return (default: 5)
+            
+        Returns:
+            Dict containing:
+            - query: The search term
+            - pdb_ids: List of matching PDB IDs
+            - total: Total number of matches in PDB
+            
+            Or {"error": str} if search fails
+        """
         search_query = {
             "query": {
                 "type": "group",

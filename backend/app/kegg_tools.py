@@ -1,6 +1,34 @@
+# backend/app/kegg_tools.py
+"""
+KEGG (Kyoto Encyclopedia of Genes and Genomes) API tools for GeneGPT.
+
+Provides access to biological pathway data from KEGG.
+API Documentation: https://www.kegg.jp/kegg/rest/keggapi.html
+"""
+
 import requests
+from typing import Dict, Any, List, Optional
+
 
 class KEGGTools:
+    """
+    Client for KEGG REST API.
+    
+    Provides methods for:
+    - Finding pathways associated with genes
+    - Retrieving pathway information and names
+    - Generating pathway map visualizations
+    
+    Includes a built-in mapping of common gene symbols to KEGG IDs
+    for faster lookups.
+    
+    Attributes:
+        BASE: Base URL for KEGG REST API
+        TIMEOUT: Request timeout in seconds
+        GENE_TO_KEGG: Mapping of gene symbols to KEGG gene IDs
+        pathway_cache: Cache of pathway ID to name mappings
+    """
+    
     BASE = "https://rest.kegg.jp"
     TIMEOUT = 15  # seconds
 
@@ -82,8 +110,19 @@ class KEGGTools:
         except requests.exceptions.RequestException:
             return None
 
-    def _find_kegg_gene_id(self, gene_symbol: str) -> str | None:
-        """Find KEGG gene ID from gene symbol."""
+    def _find_kegg_gene_id(self, gene_symbol: str) -> Optional[str]:
+        """
+        Find KEGG gene ID from a gene symbol.
+        
+        First checks the built-in GENE_TO_KEGG mapping, then falls back
+        to the KEGG find API if not found.
+        
+        Args:
+            gene_symbol: Gene symbol (e.g., "TP53", "BRCA1")
+            
+        Returns:
+            KEGG gene ID (e.g., "hsa:7157") or None if not found
+        """
         gene_upper = gene_symbol.upper().strip()
         
         # Check our known mapping first
@@ -113,10 +152,13 @@ class KEGGTools:
         
         return None
 
-    # ----------------------------------------------------
-    # Load ALL human pathway names (hsa pathways)
-    # ----------------------------------------------------
-    def load_all_pathway_names(self):
+    def load_all_pathway_names(self) -> None:
+        """
+        Load all human pathway names from KEGG into the cache.
+        
+        Populates pathway_cache with pathway_id -> pathway_name mappings
+        for all human (hsa) pathways. Called once at initialization.
+        """
         try:
             r = requests.get(f"{self.BASE}/list/pathway/hsa", timeout=10)
             if r.status_code != 200:
@@ -135,10 +177,20 @@ class KEGGTools:
         except Exception:
             print("⚠️ Failed to load KEGG pathway list (timeout).")
 
-    # ----------------------------------------------------
-    # 1) Gene → list of pathway IDs
-    # ----------------------------------------------------
-    def gene_pathways(self, gene_id: str):
+    def gene_pathways(self, gene_id: str) -> Dict[str, Any]:
+        """
+        Get list of pathways associated with a gene.
+        
+        Args:
+            gene_id: KEGG gene ID (e.g., "hsa:7157") or gene symbol
+            
+        Returns:
+            Dict containing:
+            - gene: The queried gene ID
+            - pathways: List of KEGG pathway IDs
+            
+            Or {"error": str} if not found
+        """
         url = f"{self.BASE}/link/pathway/{gene_id}"
         r = self._safe_request(url)
 
@@ -155,10 +207,18 @@ class KEGGTools:
 
         return {"gene": gene_id, "pathways": pathways}
 
-    # ----------------------------------------------------
-    # 2) Get readable pathway name (from cache or API)
-    # ----------------------------------------------------
     def pathway_name(self, pid: str) -> str:
+        """
+        Get human-readable name for a pathway ID.
+        
+        Checks cache first, then queries KEGG API if not found.
+        
+        Args:
+            pid: KEGG pathway ID (e.g., "hsa04110")
+            
+        Returns:
+            Pathway name string (e.g., "Cell cycle - Homo sapiens (human)")
+        """
         # Check cache first
         if pid in self.pathway_cache:
             return self.pathway_cache[pid]
@@ -178,10 +238,20 @@ class KEGGTools:
         
         return f"Pathway {pid}"
 
-    # ----------------------------------------------------
-    # 3) KEGG pathway raw info
-    # ----------------------------------------------------
-    def pathway_info(self, pathway_id: str):
+    def pathway_info(self, pathway_id: str) -> Dict[str, Any]:
+        """
+        Get detailed information for a KEGG pathway.
+        
+        Args:
+            pathway_id: KEGG pathway ID (e.g., "hsa04110")
+            
+        Returns:
+            Dict containing:
+            - pathway_id: The queried pathway ID
+            - raw: Raw KEGG flat file text with full pathway details
+            
+            Or {"error": str} if not found
+        """
         url = f"{self.BASE}/get/{pathway_id}"
         r = self._safe_request(url)
 
@@ -192,10 +262,16 @@ class KEGGTools:
 
         return {"pathway_id": pathway_id, "raw": r.text}
 
-    # ----------------------------------------------------
-    # 4) Pathway map (PNG)
-    # ----------------------------------------------------
-    def pathway_map(self, pid: str):
+    def pathway_map(self, pid: str) -> str:
+        """
+        Generate HTML iframe for KEGG pathway map visualization.
+        
+        Args:
+            pid: KEGG pathway ID (can include "hsa" or "map" prefix)
+            
+        Returns:
+            HTML iframe string for embedding pathway map image
+        """
         pid = pid.replace("hsa", "").replace("map", "").strip()
         url = f"https://www.kegg.jp/kegg/pathway/map/map{pid}.png"
 
@@ -204,3 +280,83 @@ class KEGGTools:
                 style="width:100%; height:900px; border:none;">
         </iframe>
         """
+
+    def search_pathway(self, query: str) -> Dict[str, Any]:
+        """
+        Search for KEGG pathways by name/keyword.
+        
+        Args:
+            query: Search term (e.g., "PI3K-AKT", "cell cycle", "apoptosis")
+            
+        Returns:
+            Dict containing:
+            - pathways: List of matching pathways with id, name, image_url, and link
+            
+            Or {"error": str} if not found
+        """
+        # First, search KEGG for pathways matching the query
+        url = f"{self.BASE}/find/pathway/{query}"
+        r = self._safe_request(url)
+        
+        if r is None:
+            return {"error": f"Connection timeout searching for pathway '{query}'"}
+        
+        if r.status_code != 200 or not r.text.strip():
+            # Try alternate search - look for human pathways only
+            url2 = f"{self.BASE}/list/pathway/hsa"
+            r2 = self._safe_request(url2)
+            
+            if r2 and r2.status_code == 200:
+                query_lower = query.lower()
+                matching = []
+                for line in r2.text.strip().split("\n"):
+                    if query_lower in line.lower():
+                        parts = line.split("\t")
+                        if len(parts) >= 2:
+                            pid = parts[0].replace("path:", "").strip()
+                            name = parts[1].strip()
+                            matching.append((pid, name))
+                
+                if matching:
+                    pathways = []
+                    for pid, name in matching[:5]:  # Limit to 5 results
+                        pathway_num = pid.replace("hsa", "")
+                        pathways.append({
+                            "pathway_id": pid,
+                            "name": name,
+                            "image_url": f"https://www.kegg.jp/kegg/pathway/hsa/{pid}.png",
+                            "pathway_link": f"https://www.kegg.jp/pathway/{pid}",
+                            "interactive_map": f"https://www.kegg.jp/kegg-bin/show_pathway?{pid}"
+                        })
+                    return {"pathways": pathways, "query": query}
+            
+            return {"error": f"No pathways found for '{query}'"}
+        
+        # Parse search results
+        pathways = []
+        for line in r.text.strip().split("\n")[:5]:  # Limit to 5 results
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                pid = parts[0].replace("path:", "").strip()
+                name = parts[1].strip()
+                
+                # Convert to human pathway if it's a generic map
+                if pid.startswith("map"):
+                    hsa_pid = pid.replace("map", "hsa")
+                else:
+                    hsa_pid = pid
+                
+                pathway_num = hsa_pid.replace("hsa", "")
+                
+                pathways.append({
+                    "pathway_id": hsa_pid,
+                    "name": name,
+                    "image_url": f"https://www.kegg.jp/kegg/pathway/hsa/{hsa_pid}.png",
+                    "pathway_link": f"https://www.kegg.jp/pathway/{hsa_pid}",
+                    "interactive_map": f"https://www.kegg.jp/kegg-bin/show_pathway?{hsa_pid}"
+                })
+        
+        if not pathways:
+            return {"error": f"No pathways found for '{query}'"}
+        
+        return {"pathways": pathways, "query": query}

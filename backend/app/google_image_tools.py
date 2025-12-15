@@ -1,10 +1,35 @@
 # backend/app/google_image_tools.py
+"""
+Google Custom Search API tools for GeneGPT.
+
+Provides image search functionality using Google Custom Search Engine.
+Requires GOOGLE_API_KEY and GOOGLE_CSE_ID environment variables.
+"""
+
 import os
 import requests
+from typing import Dict, Any, List
 
 
 class GoogleImageSearch:
+    """
+    Client for Google Custom Search API (image mode).
+    
+    Provides image search functionality for finding biological diagrams,
+    protein structures, and scientific illustrations.
+    
+    Requires environment variables:
+    - GOOGLE_API_KEY: Google API key with Custom Search enabled
+    - GOOGLE_CSE_ID: Custom Search Engine ID configured for image search
+    
+    Attributes:
+        api_key: Google API key
+        cse_id: Custom Search Engine ID
+        enabled: Whether the service is configured and available
+    """
+    
     def __init__(self):
+        """Initialize the image search client from environment variables."""
         self.api_key = os.getenv("GOOGLE_API_KEY")
         self.cse_id = os.getenv("GOOGLE_CSE_ID")
 
@@ -14,10 +39,22 @@ class GoogleImageSearch:
         else:
             self.enabled = True
 
-    def search_images(self, query: str, num: int = 3):
+    def search_images(self, query: str, num: int = 3) -> Dict[str, Any]:
         """
-        Call Google Custom Search (image mode) and return a small list of results.
-        Each result: {"title": ..., "link": ..., "thumbnail": ...}
+        Search for images using Google Custom Search.
+        
+        Args:
+            query: Search terms (e.g., "TP53 protein structure")
+            num: Number of images to return (default: 3, max: 10)
+            
+        Returns:
+            Dict containing:
+            - results: List of images, each with:
+                - title: Image title
+                - link: Direct URL to image
+                - thumbnail: URL to thumbnail version
+            
+            Or {"error": str} if search fails or not configured
         """
         if not self.enabled:
             return {"error": "Image search is not configured on the server."}

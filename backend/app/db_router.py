@@ -184,17 +184,22 @@ class DatabaseRouter:
                         "end": end,
                     }
                     
-                    if feature_type == "Motif":
+                    # Handle motifs
+                    if feature_type in ["Motif", "Short sequence motif"]:
                         protein_data["motifs"].append(feature_info)
-                    elif feature_type == "Domain":
+                    # Handle domains - check multiple possible names
+                    elif feature_type in ["Domain", "Topological domain", "Transmembrane", "Zinc finger", 
+                                          "DNA binding", "DNA-binding region", "Repeat", "Compositional bias"]:
                         protein_data["domains"].append(feature_info)
-                    elif feature_type == "Region":
+                    # Handle regions
+                    elif feature_type in ["Region", "Region of interest", "Coiled coil", "Disordered"]:
                         protein_data["regions"].append(feature_info)
                     elif feature_type == "Binding site":
                         protein_data["binding_sites"].append(feature_info)
                     elif feature_type == "Active site":
                         protein_data["active_sites"].append(feature_info)
-                    elif feature_type in ["Modified residue", "Glycosylation", "Lipidation", "Cross-link"]:
+                    elif feature_type in ["Modified residue", "Glycosylation", "Lipidation", "Cross-link",
+                                          "Disulfide bond", "Phosphorylation"]:
                         protein_data["modifications"].append({
                             "type": feature_type,
                             "description": description,

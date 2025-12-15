@@ -1,6 +1,30 @@
+# backend/app/pubchem_tools.py
+"""
+PubChem API tools for GeneGPT.
+
+Provides access to chemical compound information from NCBI PubChem.
+API Documentation: https://pubchem.ncbi.nlm.nih.gov/docs/pug-rest
+"""
+
 import requests
+from typing import Dict, Any, Optional
+
 
 class PubChemTools:
+    """
+    Client for PubChem PUG REST API.
+    
+    Provides methods for:
+    - Searching compounds by name
+    - Retrieving compound properties (formula, weight, SMILES)
+    - Getting 3D structure data
+    - Generating embedded viewer iframes
+    
+    Attributes:
+        BASE: Base URL for PubChem PUG REST API
+        TIMEOUT: Request timeout in seconds
+    """
+    
     BASE = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
     TIMEOUT = 20  # seconds
 
@@ -13,8 +37,20 @@ class PubChemTools:
         except requests.exceptions.RequestException:
             return None
 
-    # 1. Search for a chemical by name
-    def pubchem_search(self, query: str):
+    def pubchem_search(self, query: str) -> Dict[str, Any]:
+        """
+        Search for a chemical compound by name.
+        
+        Args:
+            query: Compound name (e.g., "aspirin", "caffeine", "glucose")
+            
+        Returns:
+            Dict containing:
+            - query: The search term
+            - cid: PubChem Compound ID (CID)
+            
+            Or {"error": str} if not found
+        """
         url = f"{self.BASE}/compound/name/{query}/JSON"
         r = self._safe_request(url)
         
@@ -30,9 +66,20 @@ class PubChemTools:
         except (KeyError, IndexError):
             return {"error": f"Could not parse response for '{query}'"}
 
-    # 1b. Get compound info by CID directly
-    def pubchem_get_by_cid(self, cid: str | int):
-        """Get compound info when CID is already known."""
+    def pubchem_get_by_cid(self, cid: str | int) -> Dict[str, Any]:
+        """
+        Get compound information by CID directly.
+        
+        Args:
+            cid: PubChem Compound ID
+            
+        Returns:
+            Dict containing:
+            - cid: The compound ID
+            - name: Compound name/title
+            
+            Or {"error": str} if not found
+        """
         url = f"{self.BASE}/compound/cid/{cid}/description/JSON"
         r = self._safe_request(url)
         
@@ -56,8 +103,22 @@ class PubChemTools:
         except Exception:
             return {"cid": int(cid), "name": f"Compound {cid}"}
 
-    # 2. Get compound properties by CID
-    def pubchem_properties(self, cid: str | int):
+    def pubchem_properties(self, cid: str | int) -> Dict[str, Any]:
+        """
+        Get chemical properties for a compound.
+        
+        Args:
+            cid: PubChem Compound ID
+            
+        Returns:
+            Dict containing:
+            - MolecularFormula: Chemical formula (e.g., "C9H8O4")
+            - MolecularWeight: Molecular weight
+            - CanonicalSMILES: SMILES notation
+            - InChIKey: International Chemical Identifier key
+            
+            Or {"error": str} if not found
+        """
         url = f"{self.BASE}/compound/cid/{cid}/property/MolecularFormula,MolecularWeight,CanonicalSMILES,InChIKey/JSON"
         r = self._safe_request(url)
         
@@ -72,8 +133,20 @@ class PubChemTools:
         except Exception:
             return {"error": "Could not parse properties"}
 
-    # 3. Get 3D structure (SDF format)
-    def pubchem_3d_structure(self, cid: str | int):
+    def pubchem_3d_structure(self, cid: str | int) -> Dict[str, Any]:
+        """
+        Get 3D structure in SDF format for a compound.
+        
+        Args:
+            cid: PubChem Compound ID
+            
+        Returns:
+            Dict containing:
+            - cid: The compound ID
+            - sdf: 3D structure in SDF format
+            
+            Or {"error": str} if not available
+        """
         url = f"{self.BASE}/compound/cid/{cid}/record/SDF"
         r = self._safe_request(url)
         
@@ -84,8 +157,16 @@ class PubChemTools:
         
         return {"cid": cid, "sdf": r.text}
 
-    # 4. Generate a viewer iframe
-    def pubchem_iframe(self, cid: str | int):
+    def pubchem_iframe(self, cid: str | int) -> str:
+        """
+        Generate an embedded iframe for PubChem compound viewer.
+        
+        Args:
+            cid: PubChem Compound ID
+            
+        Returns:
+            HTML iframe string for embedding PubChem compound page
+        """
         return f"""
         <iframe
             src="https://pubchem.ncbi.nlm.nih.gov/compound/{cid}"
