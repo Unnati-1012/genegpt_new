@@ -1,12 +1,7 @@
 import os
 from dotenv import load_dotenv
-
-load_dotenv()
-print("Loaded environment:", os.environ.get("GOOGLE_API_KEY"))
-
-import os
-from dotenv import load_dotenv
 import pathlib
+import re
 
 # Path: backend/app/main.py
 # Move UP one directory to reach backend/
@@ -14,9 +9,7 @@ BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 ENV_PATH = BASE_DIR / ".env"
 
 print("Loading .env from:", ENV_PATH)
-
 load_dotenv(ENV_PATH)
-
 print("Loaded GOOGLE_API_KEY:", os.environ.get("GOOGLE_API_KEY"))
 
 from fastapi import FastAPI
@@ -24,64 +17,52 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-import pathlib
-import re
 
-# existing imports...
+# Database tools
 from .pubchem_tools import PubChemTools
-
-# STRING (NEW)
 from .string_tools import STRINGTools
-string_db = STRINGTools()
-
-# NEW: Google Image Search  (ONLY THIS ONE)
 from .google_image_tools import GoogleImageSearch
-image_search = GoogleImageSearch()
-
-# Ensembl
 from .ensembl_tools import EnsemblTools
-ensembl = EnsemblTools()
-
-# KEGG
 from .kegg_tools import KEGGTools
-kegg = KEGGTools()
-
-# NCBI
 from .ncbi_tools import NCBITools
-ncbi = NCBITools()
+from .pdb_tools import PDBTools
+from .clinvar_tools import ClinVarTools
 
-# PubChem
-from .pubchem_tools import PubChemTools
+# Initialize tools
 pubchem = PubChemTools()
-
-# STRING (NEW)
-from .string_tools import STRINGTools
 string_db = STRINGTools()
+image_search = GoogleImageSearch()
+ensembl = EnsemblTools()
+kegg = KEGGTools()
+ncbi = NCBITools()
+pdb = PDBTools()
+clinvar = ClinVarTools()
 
-# Router + LLM
+# Router + LLM (legacy)
 from .uniprot_tools import route_query, multimodal_response, KNOWN_GENE_MAP
 from .llm_client import LLMClient
 
-# PDB
-from .pdb_tools import PDBTools
-pdb = PDBTools()
+# NEW: Database Router for intelligent routing
+from .db_router import DatabaseRouter
+from .schemas import DatabaseResult
 
-from .clinvar_tools import ClinVarTools
-clinvar = ClinVarTools()
+# Logger
+from .logger import get_logger
+logger = get_logger()
 
 # -------------------------------------------------
 # PATH FIX
 # -------------------------------------------------
-BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend" / "static"
-
-print("📁 Serving static from:", FRONTEND_DIR)
+logger.info(f"Serving static from: {FRONTEND_DIR}")
 
 # -------------------------------------------------
 # APP
 # -------------------------------------------------
 app = FastAPI()
 llm = LLMClient()
+db_router = DatabaseRouter()  # NEW: Intelligent database router
+
 
 # -------------------------------------------------
 # STATIC
@@ -117,351 +98,126 @@ app.add_middleware(
 )
 
 
-def _render_clinvar_table(gene: str, data: dict):
-    """Build reply text + HTML table for a ClinVar variants_for_gene() result."""
-
-    if "error" in data:
-        return data["error"], None
-
-    variants = data.get("results", [])
-    if not variants:
-        return f"No ClinVar variants found for {gene}.", None
-
-    # Count significance categories
-    counts = {}
-    for v in variants:
-        sig = (v.get("clinical_significance") or "Unknown").strip()
-        counts[sig] = counts.get(sig, 0) + 1
-
-    # Summary text
-    lines = [f"ClinVar variants for {gene}:"]
-    for sig, n in counts.items():
-        lines.append(f"- {sig}: {n} variants")
-
-    # Build table rows
-    rows = ""
-    for v in variants:
-        vid = v.get("id", "")
-        sig = v.get("clinical_significance", "Unknown")
-        conds = ", ".join(v.get("conditions", [])) or "—"
-        review = v.get("review_status", "Unknown")
-
-        rows += f"""
-            <tr>
-                <td style='padding:6px;border:1px solid #555;'>{vid}</td>
-                <td style='padding:6px;border:1px solid #555;'>{sig}</td>
-                <td style='padding:6px;border:1px solid #555;'>{conds}</td>
-                <td style='padding:6px;border:1px solid #555;'>{review}</td>
-            </tr>
-        """
-
-    # Full HTML table
-    html = f"""
-        <h3>ClinVar variants for <b>{gene}</b></h3>
-        <table style='width:100%; border-collapse:collapse; margin-top:8px;'>
-            <tr style='background:#333;color:#fff;'>
-                <th style='padding:6px;border:1px solid #555;'>ID</th>
-                <th style='padding:6px;border:1px solid #555;'>Significance</th>
-                <th style='padding:6px;border:1px solid #555;'>Conditions</th>
-                <th style='padding:6px;border:1px solid #555;'>Review status</th>
-            </tr>
-            {rows}
-        </table>
-    """
-
-    return "\n".join(lines), html
-
-
 # -------------------------------------------------
-# HELPER: PROCESS A SINGLE QUERY
+# HELPER: PROCESS A SINGLE QUERY (using intelligent routing)
 # -------------------------------------------------
 async def process_single_query(msg: str, messages: list[dict]):
-    lowered = msg.lower()
-    print("🔍 Sub-query:", msg)
-
-    # 0) Explicit IMAGE
-    if any(word in lowered for word in ["image", "picture", "photo", "diagram"]):
-        img_data = image_search.search_images(msg, num=3)
-
-        if "error" in img_data:
-            return {"reply": img_data["error"], "html": None}
-
-        results = img_data["results"]
-
-        items_html = []
-        for i, r in enumerate(results, start=1):
-            url = r["link"]
-            title = r["title"]
-            items_html.append(
-                f"<li style='margin-bottom:8px;'>"
-                f"<a href='{url}' target='_blank'>{i}. {title}</a>"
-                f"</li>"
-            )
-
-        html = (
-            "<p>Here are some image links you can click:</p>"
-            "<ol style='padding-left:20px;'>"
-            + "".join(items_html)
-            + "</ol>"
-        )
-        reply = "Here are some image links related to your query."
-        return {"reply": reply, "html": html}
-
-    # -------------------------------------------------
-    # 0.5) ClinVar: natural-language mutation / variant queries
-    #      e.g. "list mutations for TP53", "variants in BRCA2",
-    #           "what variants of MSH2 does clinvar have?"
-    # -------------------------------------------------
-    clinvar_gene = None
-
-    if any(w in lowered for w in ["mutation", "mutations", "variant", "variants"]):
-        tokens = re.split(r"[\s,():]+", msg)
-
-        # Words we should *never* treat as gene symbols
-        stopwords = {
-            "WHAT",
-            "WHICH",
-            "VARIANT",
-            "VARIANTS",
-            "MUTATION",
-            "MUTATIONS",
-            "OF",
-            "IN",
-            "FOR",
-            "DO",
-            "DOES",
-            "HAS",
-            "HAVE",
-            "ALL",
-            "ANY",
-            "SHOW",
-            "LIST",
-            "PLEASE",
-            "CLINVAR",
-            "GENE",
-            "WITH",
-            "THE",
+    """
+    Process a single query using LLM-based intelligent routing.
+    """
+    # Step 1: Classify the query using LLM with structured output
+    logger.llm_call("query_classification", llm.routing_model)
+    classification = await llm.classify_query(msg, messages)
+    
+    # Step 2: Handle based on classification
+    
+    # 2a: General queries - return LLM's direct reply
+    if classification.query_type == "general":
+        reply = classification.reply or await llm.get_response_from_messages(messages)
+        return {"reply": reply, "html": None}
+    
+    # 2b: Medical query needs clarification
+    if classification.needs_clarification:
+        return {
+            "reply": classification.follow_up_question or "Could you please provide more details about your query?",
+            "html": None
         }
+    
+    # 2c: Medical query - route to database
+    if not classification.db_type:
+        # Fallback if no database was selected
+        reply = await llm.get_response_from_messages(messages)
+        return {"reply": reply, "html": None}
+    
+    # Step 3: Fetch data from the appropriate database
+    db_result = db_router.route_and_fetch(classification)
+    
+    # Log database result
+    if db_result.success:
+        record_count = len(db_result.data) if isinstance(db_result.data, list) else None
+        logger.database_result(classification.db_type, True, record_count)
+    else:
+        logger.database_result(classification.db_type, False, error=db_result.error)
 
-        # scan from the end – usually the gene symbol is near the end
-        for tok in reversed(tokens):
-            t = tok.upper().strip()
-            if not t:
-                continue
-            if t in stopwords:
-                continue
+    # Step 4: Generate final answer using LLM with retrieved data
+    logger.llm_call("answer_generation", llm.generation_model)
+    final_answer = await llm.generate_answer_with_data(msg, db_result, messages)
+    logger.llm_response("answer_generation", len(final_answer))
+    
+    # Step 5: Build HTML for structured display (only if relevant to query)
+    html = None
+    if db_result.success and db_result.data:
+        html = _build_html_for_result(classification.db_type, db_result.data, msg)
+    
+    return {"reply": final_answer, "html": html}
 
-            # prefer known common genes first
-            if t in KNOWN_GENE_MAP:
-                clinvar_gene = t
-                break
 
-            # otherwise accept reasonable gene-like tokens (letters/digits, length 3–10)
-            if re.fullmatch(r"[A-Z0-9]{3,10}", t):
-                clinvar_gene = t
-                break
+# -------------------------------------------------
+# CHAT ENDPOINT (now uses intelligent routing)
+# -------------------------------------------------
+@app.post("/chat")
+async def chat(req: ChatRequest):
+    """
+    Main chat endpoint using LLM-based intelligent routing.
+    """
+    messages = [m.model_dump() for m in req.messages]
+    msg = req.messages[-1].content.strip()
 
-    if clinvar_gene:
-        data = clinvar.variants_for_gene(clinvar_gene)
-        reply_text, html = _render_clinvar_table(clinvar_gene, data)
+    logger.separator("CHAT")
+    logger.incoming_request("/chat", msg)
 
-        if (
-            html
-            or ("No ClinVar variants" in reply_text)
-            or ("error" in reply_text.lower())
-        ):
-            return {"reply": reply_text, "html": html}
+    # Process the query using intelligent routing
+    result = await process_single_query(msg, messages)
+    logger.response_sent(has_html=bool(result.get("html")), reply_length=len(result.get("reply", "")))
+    return result
 
-    # ROUTER (UniProt / AlphaFold / etc.)
-    routed = route_query(msg)
-    if routed:
-        print("🔬 Router activated")
-        return routed
 
-    # NCBI Gene
-    if lowered.startswith("gene") or "ncbi gene" in lowered:
-        cleaned = lowered.replace("ncbi gene", "").replace("gene", "").strip()
-        result = ncbi.gene_search(cleaned)
-
-        if isinstance(result, dict) and "gene_id" in result:
-            summary = ncbi.gene_summary(result["gene_id"])
-            return {"reply": str(summary), "html": None}
-
-    # PubMed search
-    if lowered.startswith("pubmed "):
-        query = msg[len("pubmed ") :].strip()
-        results = []
-
-        papers = ncbi.pubmed_search(query)
-
-        if not papers or "error" in papers:
-            return {"reply": f"No PubMed results for '{query}'.", "html": None}
-
-        results = papers.get("results", []) or []
-
-        if not results:
-            return {"reply": f"No PubMed results for '{query}'.", "html": None}
-
-        items = []
-        for i, p in enumerate(results, start=1):
-            title = p.get("title", "No title")
-            authors = p.get("authors", "Unknown authors")
-            year = p.get("year", "N/A")
-            pmid = p.get("pmid", "")
-            link = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
-
-            items.append(
-                f"<li style='margin-bottom:10px;'>"
-                f"<b>{i}. {title}</b><br>"
-                f"<small>{authors} — {year}</small><br>"
-                f"<a href='{link}' target='_blank'>🔗 PubMed (PMID {pmid})</a>"
-                f"</li>"
-            )
-
-        html = "<ol style='padding-left:20px;'>" + "".join(items) + "</ol>"
-        return {"reply": f"PubMed results for '{query}':", "html": html}
-
-    # Fake protein blocker
-    fake = re.search(
-        r"\b(visualize|show|model)\s+([A-Za-z0-9_\-]+)\s+protein\b", lowered
-    )
-    if fake:
-        token = fake.group(2).upper()
-        if token not in KNOWN_GENE_MAP and not re.match(
-            r"^[A-Z][0-9][A-Z0-9]{3}[0-9]$", token
-        ):
-            return multimodal_response(
-                "This does not appear to be a real protein. Provide a valid UniProt ID.",
-                None,
-            )
-
-    # KEGG gene
-    if lowered.startswith("kegg gene"):
-        gene = lowered.replace("kegg gene", "").strip()
-        data = kegg.gene_pathways(gene)
-
-        if "error" in data:
-            return {"reply": data["error"], "html": None}
-
-        items = []
-        for pid in data["pathways"]:
-            name = kegg.pathway_name(pid)
-            url = f"https://www.kegg.jp/dbget-bin/www_bget?{pid}"
-            items.append(
-                f"<li><a href='{url}' target='_blank'>{pid}: {name}</a></li>"
-            )
-
-        html = "<ul>" + "".join(items) + "</ul>"
-        return {"reply": f"KEGG pathways for {gene}:", "html": html}
-
-    # KEGG pathway
-    if lowered.startswith("kegg pathway"):
-        pid = lowered.replace("kegg pathway", "").strip()
-        info = kegg.pathway_info(pid)
-
-        raw = info.get("raw", "")
-        name = "Unknown"
-        clazz = "Unknown"
-        drugs = []
-
-        for line in raw.split("\n"):
-            if line.startswith("NAME"):
-                name = line.replace("NAME", "").strip()
-            if line.startswith("CLASS"):
-                clazz = line.replace("CLASS", "").strip()
-            if line.startswith("DRUG"):
-                drugs.append(line.replace("DRUG", "").strip())
-
-        html = f"""
-        <b>Pathway:</b> {pid}<br>
-        <b>Name:</b> {name}<br>
-        <b>Class:</b> {clazz}<br><br>
-
-        <details>
-            <summary><b>Drugs ({len(drugs)})</b></summary>
-            <pre>{chr(10).join(drugs)}</pre>
-        </details>
-        <br>
-
-        <details>
-            <summary><b>Full KEGG File</b></summary>
-            <pre>{raw}</pre>
-        </details>
-        """
-
-        return {"reply": f"Details for KEGG pathway {pid}:", "html": html}
-
-    # Explicit ClinVar command
-    if lowered.startswith("clinvar"):
-        rest = msg.split(" ", 1)[1].strip() if " " in msg else ""
-
-        if not rest:
-            return {
-                "reply": "Usage:\n- clinvar TP53\n- clinvar id 12345",
-                "html": None,
-            }
-
-        # ID mode
-        id_match = re.fullmatch(r"(id\s+)?(\d+)", rest, flags=re.IGNORECASE)
-        if id_match:
-            cid = id_match.group(2)
-            rec = clinvar.record_details(cid)
-
-            if "error" in rec:
-                return {"reply": rec["error"], "html": None}
-
-            lines = [
-                f"ClinVar record {rec['id']}",
-                f"Title: {rec['title']}",
-                f"Type: {rec['type']}",
-                f"Clinical significance: {rec['clinical_significance']}",
-                f"Conditions: {', '.join(rec['conditions'] or [])}",
-                f"Review status: {rec['review_status']}",
-                f"RCV accession: {rec.get('rcvaccession','')}",
-            ]
-            return {"reply": "\n".join(lines), "html": None}
-
-        # Gene mode
-        gene = rest.upper()
-        data = clinvar.variants_for_gene(gene)
-
-        reply_text, html = _render_clinvar_table(gene, data)
-        return {"reply": reply_text, "html": html}
-
-    # STRING DB
-    if lowered.startswith("string"):
-        token = msg[len("string") :].strip()
-        if not token:
-            return {"reply": "Use: string <gene_symbol>", "html": None}
-
-        data = string_db.fetch_interactions(token)
-
-        if "error" in data:
-            return {"reply": data["error"], "html": None}
-
-        interactions = data.get("interactions", [])
-        if not interactions:
-            return {"reply": f"No STRING interactions for '{token}'.", "html": None}
-
+# -------------------------------------------------
+# HTML BUILDER FOR DATABASE RESULTS
+# -------------------------------------------------
+def _build_html_for_result(db_type: str, data: dict, query: str = "") -> str | None:
+    """
+    Build optional HTML display for database results.
+    Only shows HTML when it adds value beyond the text response.
+    
+    Args:
+        db_type: The database that was queried
+        data: The data returned from the database
+        query: The original user query (to determine relevance)
+    """
+    query_lower = query.lower() if query else ""
+    
+    # Determine what the user is asking about
+    wants_sequence = any(w in query_lower for w in ["sequence", "amino acid", "fasta"])
+    wants_structure = any(w in query_lower for w in ["structure", "3d", "fold", "pdb", "visualize"])
+    wants_interactions = any(w in query_lower for w in ["interact", "partner", "binding", "network"])
+    wants_variants = any(w in query_lower for w in ["variant", "mutation", "snp", "clinvar"])
+    wants_pathways = any(w in query_lower for w in ["pathway", "kegg", "metabolic"])
+    wants_domains = any(w in query_lower for w in ["domain", "region"])
+    wants_motifs = any(w in query_lower for w in ["motif"])
+    wants_function = any(w in query_lower for w in ["function", "role", "what does", "what is"])
+    wants_images = any(w in query_lower for w in ["image", "picture", "show me", "photo"])
+    wants_papers = any(w in query_lower for w in ["paper", "pubmed", "publication", "research", "study"])
+    
+    # For general info queries (like "tell me about X", "what is X", "isoforms of X"), 
+    # the text response is usually sufficient - no HTML needed
+    is_general_info = any(w in query_lower for w in ["isoform", "tell me about", "what are", "describe", "explain", "overview"])
+    
+    if db_type == "string" and data.get("interactions"):
+        # Only show STRING HTML if user asked about interactions
+        if not wants_interactions:
+            return None
+            
+        interactions = data["interactions"]
         rows = ""
-        for item in interactions:
-            partner = item["partner"]
-            score = item["score"]
-            sid = item["string_id"]
-            link = f"https://string-db.org/network/{sid}"
-
-            rows += (
-                f"<tr>"
-                f"<td style='padding:6px;border:1px solid #555;'>"
-                f"<a href='{link}' target='_blank'>{partner}</a>"
-                f"</td>"
-                f"<td style='padding:6px;border:1px solid #555;'>{score}</td>"
-                f"</tr>"
-            )
-
+        for item in interactions[:10]:
+            partner = item.get("partner", "")
+            score = item.get("score", 0)
+            rows += f"<tr><td style='padding:6px;border:1px solid #555;'>{partner}</td><td style='padding:6px;border:1px solid #555;'>{score}</td></tr>"
+        
+        network_img = data.get("network_image_url", "")
         html = f"""
-        <h3>STRING Interactions for <b>{token.upper()}</b></h3>
-
+        <h3>STRING Interactions for <b>{data.get('query', '')}</b></h3>
         <table style='width:100%; border-collapse:collapse; margin-top:10px;'>
             <tr style='background:#444;'>
                 <th style='padding:8px; border:1px solid #666;'>Partner</th>
@@ -469,181 +225,326 @@ async def process_single_query(msg: str, messages: list[dict]):
             </tr>
             {rows}
         </table>
-
-        <br>
-        <h3>Network Image</h3>
-        <img src="{ string_db.network_image(token) }"
-             alt="STRING network"
-             style="width:100%; border-radius:10px; border:1px solid #555;">
+        <br><h3>Network Image</h3>
+        <img src="{network_img}" alt="STRING network" style="width:100%; border-radius:10px; border:1px solid #555;">
         """
-
-        return {"reply": f"STRING interactions for {token}:", "html": html}
-
-    # Google Images
-    if "show me" in lowered or "picture" in lowered:
-        img_data = image_search.search_images(msg, num=3)
-
-        if "error" in img_data:
-            return {"reply": img_data["error"], "html": None}
-
-        results = img_data.get("results", []) or []
-        if not results:
-            return {"reply": "No images found.", "html": None}
-
-        md_links = "\n".join(
-            [f"- [{r['title']}]({r['link']})" for r in results]
-        )
-
-        return {
-            "reply": f"Here are some image results for **{msg}**:\n\n{md_links}",
-            "html": None,
-        }
-
-    # Ensembl
-    if lowered.startswith("ensembl"):
-        rest = msg[len("ensembl") :].strip()
-        parts = rest.split()
-
-        if not parts:
-            return {
-                "reply": "Specify: ensembl gene <symbol>, ensembl id <ID>, ensembl transcripts <ID>, ensembl region <loc>",
-                "html": None,
-            }
-
-        subcmd = parts[0].lower()
-
-        if subcmd == "gene" and len(parts) >= 2:
-            symbol = parts[1].upper()
-            gene = ensembl.lookup_gene(symbol, species="human")
-            if not gene:
-                return {"reply": f"No Ensembl gene for '{symbol}'.", "html": None}
-
-            r = [
-                f"Ensembl gene for {symbol}",
-                f"ID: {gene['id']}",
-                f"Name: {gene.get('display_name', '')}",
-                f"Species: {gene.get('species', '')}",
-                f"Description: {gene.get('description', '')}",
-                "",
-                "Location:",
-                f"{gene.get('seq_region_name', '')}:{gene.get('start', '')}-{gene.get('end', '')} (strand {gene.get('strand', '')})",
-                "",
-                f"Biotype: {gene.get('biotype', '')}",
-                f"Version: {gene.get('version', '')}",
-            ]
-            return {"reply": "\n".join(r), "html": None}
-
-        if subcmd == "id" and len(parts) >= 2:
-            stable_id = parts[1].upper()
-            obj = ensembl.lookup_id(stable_id)
-            if not obj:
-                return {"reply": f"No Ensembl record for '{stable_id}'.", "html": None}
-
-            r = [
-                f"Ensembl object: {stable_id}",
-                f"Type: {obj.get('object_type', '')}",
-                f"Name: {obj.get('display_name', '')}",
-                f"Species: {obj.get('species', '')}",
-                f"Description: {obj.get('description', '')}",
-                "",
-                "Location:",
-                f"{obj.get('seq_region_name', '')}:{obj.get('start', '')}-{obj.get('end', '')} (strand {obj.get('strand', '')})",
-                "",
-                f"Biotype: {obj.get('biotype', '')}",
-                f"Parent: {obj.get('parent', '')}",
-            ]
-            return {"reply": "\n".join(r), "html": None}
-
-        if subcmd in ("transcript", "transcripts") and len(parts) >= 2:
-            gene_id = parts[1]
-            transcripts = ensembl.gene_transcripts(gene_id)
-            if not transcripts:
-                return {
-                    "reply": f"No transcripts found for '{gene_id}'.",
-                    "html": None,
-                }
-
-            lines = [f"Transcripts for {gene_id} (showing {len(transcripts)}):", ""]
-            for t in transcripts:
-                lines.append(
-                    f"- {t['id']} | {t.get('biotype', '')} | "
-                    f"{t.get('seq_region_name', '') or ''}:{t.get('start', '')}-{t.get('end', '')} len={t.get('length', '')}"
-                )
-            return {"reply": "\n".join(lines), "html": None}
-
-        if subcmd == "region" and len(parts) >= 2:
-            region = parts[1].replace('"', "").replace("”", "").replace("“", "")
-            seq_info = ensembl.region_sequence(region, species="human")
-            if not seq_info:
-                return {
-                    "reply": f"Could not fetch sequence for '{region}'.",
-                    "html": None,
-                }
-
-            seq = seq_info["seq"]
-            preview = seq[:60] + ("..." if len(seq) > 60 else "")
-
-            r = [
-                f"Ensembl region sequence ({region})",
-                f"Length: {seq_info['length']} bp",
-                "",
-                "Preview:",
-                preview,
-            ]
-            return {"reply": "\n".join(r), "html": None}
-
-        return {"reply": "Unknown Ensembl command.", "html": None}
-
-    # KEGG Map
-    if lowered.startswith("kegg map"):
-        pid = lowered.replace("kegg map", "").strip()
-        iframe = kegg.pathway_map(pid)
-        return {"reply": f"Showing KEGG map for {pid}", "html": iframe}
-
-    # FALLBACK TO LLM
-    reply = await llm.get_response_from_messages(messages)
-    return multimodal_response(reply, None)
-
-
-# -------------------------------------------------
-# CHAT ENDPOINT
-# -------------------------------------------------
-@app.post("/chat")
-async def chat(req: ChatRequest):
-
-    messages = [m.model_dump() for m in req.messages]
-    msg = req.messages[-1].content.strip()
-
-    print("📩 Incoming:", msg)
-
-    if " and " in msg:
-        parts = [p.strip() for p in msg.split(" and ") if p.strip()]
-    else:
-        parts = [msg]
-
-    if len(parts) == 1:
-        return await process_single_query(msg, messages)
-
-    combined_reply_parts = []
-    combined_html_blocks = []
-
-    for part in parts:
-        sub_messages = messages + [{"role": "user", "content": part}]
-        res = await process_single_query(part, sub_messages)
-
-        if res.get("reply"):
-            combined_reply_parts.append(f"### {part}\n{res['reply']}")
-
-        if res.get("html"):
-            combined_html_blocks.append(
-                f"<div style='margin:15px 0;padding:12px;border-radius:8px;'>"
-                f"<h3>{part}</h3>{res['html']}</div>"
-            )
-
-    combined_reply = "\n\n".join(combined_reply_parts) if combined_reply_parts else ""
-    combined_html = "".join(combined_html_blocks) if combined_html_blocks else None
-
-    if not combined_reply and combined_html:
-        combined_reply = "Here are the results for your combined query."
-
-    return {"reply": combined_reply, "html": combined_html}
+        return html
+    
+    elif db_type == "clinvar" and data.get("sample_variants"):
+        # Only show ClinVar HTML if user asked about variants
+        if not wants_variants:
+            return None
+            
+        variants = data["sample_variants"]
+        rows = ""
+        for v in variants:
+            vid = v.get("id", "")
+            sig = v.get("clinical_significance", "Unknown")
+            conds = ", ".join(v.get("conditions", [])) or "—"
+            rows += f"<tr><td style='padding:6px;border:1px solid #555;'>{vid}</td><td style='padding:6px;border:1px solid #555;'>{sig}</td><td style='padding:6px;border:1px solid #555;'>{conds}</td></tr>"
+        
+        html = f"""
+        <h3>ClinVar Variants for <b>{data.get('gene', '')}</b></h3>
+        <p>Total: {data.get('total_variants', 0)} variants</p>
+        <table style='width:100%; border-collapse:collapse; margin-top:8px;'>
+            <tr style='background:#333;color:#fff;'>
+                <th style='padding:6px;border:1px solid #555;'>ID</th>
+                <th style='padding:6px;border:1px solid #555;'>Significance</th>
+                <th style='padding:6px;border:1px solid #555;'>Conditions</th>
+            </tr>
+            {rows}
+        </table>
+        """
+        return html
+    
+    elif db_type == "image_search" and data.get("results"):
+        results = data["results"]
+        items = ""
+        for i, r in enumerate(results, 1):
+            items += f"<li style='margin-bottom:8px;'><a href='{r.get('link', '')}' target='_blank'>{i}. {r.get('title', 'Image')}</a></li>"
+        
+        html = f"<p>Image results:</p><ol style='padding-left:20px;'>{items}</ol>"
+        return html
+    
+    elif db_type == "pdb" and data.get("pdb_id"):
+        pdb_id = data["pdb_id"]
+        title = data.get("title", "Unknown structure")
+        request_type = data.get("request_type", "view")
+        is_alphafold = data.get("is_alphafold", False)
+        
+        # Handle mmCIF content display
+        if request_type == "mmcif" and data.get("mmcif_preview"):
+            mmcif_preview = data.get("mmcif_preview", "")
+            total_lines = data.get("mmcif_total_lines", 0)
+            download_url = data.get("download_url", "")
+            viewer_url = data.get("viewer_url", "")
+            
+            # Escape HTML entities in mmCIF content
+            mmcif_escaped = mmcif_preview.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            
+            html = f"""
+            <h3>📄 mmCIF Structure File: {pdb_id.upper()}</h3>
+            <p><b>{title}</b></p>
+            <p style='color:#888; font-size:0.9em;'>Showing first 500 of {total_lines} lines</p>
+            
+            <details style='margin-top:10px; background:#1a1a2e; padding:12px; border-radius:8px;'>
+                <summary style='cursor:pointer; color:#4ecdc4; font-weight:bold;'>📂 Click to expand mmCIF content</summary>
+                <pre style='margin-top:10px; font-family:monospace; font-size:11px; line-height:1.4; max-height:500px; overflow-y:auto; white-space:pre-wrap; word-break:break-all; color:#ddd;'>{mmcif_escaped}</pre>
+            </details>
+            
+            <p style='margin-top:12px;'>
+                <a href="{download_url}" target="_blank" style='color:#4ecdc4; margin-right:15px;'>⬇️ Download full mmCIF file</a>
+                <a href="{viewer_url}" target="_blank" style='color:#4ecdc4;'>🔬 View 3D structure</a>
+            </p>
+            """
+            return html
+        
+        # Handle AlphaFold structures
+        if is_alphafold:
+            accession = data.get("uniprot_accession", "")
+            gene_name = data.get("gene_name", "")
+            viewer_url = data.get("viewer_url", f"https://alphafold.ebi.ac.uk/entry/{accession}")
+            
+            html = f"""
+            <h3>🔬 {gene_name} - AlphaFold Predicted Structure</h3>
+            <p><b>{title}</b></p>
+            <p style='color:#888; font-size:0.9em;'>UniProt: {accession} | Method: AlphaFold AI Prediction</p>
+            
+            <div style='margin-top:15px; background:#000; border-radius:10px; overflow:hidden;'>
+                <iframe src="{viewer_url}" 
+                        style="width:100%; height:500px; border:none;">
+                </iframe>
+            </div>
+            <p style='color:#888; font-size:0.85em; text-align:center; margin-top:5px;'>
+                AlphaFold predicted structure • <a href="{viewer_url}" target="_blank" style='color:#4ecdc4;'>Open in new tab</a>
+            </p>
+            
+            <p style='margin-top:10px;'>
+                <a href="https://www.uniprot.org/uniprotkb/{accession}" target="_blank" style='color:#4ecdc4;'>🔗 View on UniProt</a>
+            </p>
+            """
+            return html
+        
+        # Show PDB structure viewer when user asks about structure
+        method = data.get("method", "")
+        gene_name = data.get("gene_name", data.get("search_query", ""))
+        all_pdb_ids = data.get("all_pdb_ids", [])
+        total = data.get("total_structures", len(all_pdb_ids))
+        
+        # Build list of other available structures if there are multiple
+        other_structures = ""
+        if len(all_pdb_ids) > 1:
+            other_items = "".join([
+                f"<a href='https://www.rcsb.org/structure/{pid}' target='_blank' style='margin-right:8px; color:#4ecdc4;'>{pid.upper()}</a>"
+                for pid in all_pdb_ids[1:6]
+            ])
+            other_structures = f"""
+            <details style='margin-top:10px;'>
+                <summary style='cursor:pointer; color:#4ecdc4;'>📚 Other available structures ({total} total)</summary>
+                <p style='margin-top:8px;'>{other_items}</p>
+            </details>
+            """
+        
+        html = f"""
+        <h3>🔬 PDB Structure: {pdb_id.upper()}</h3>
+        <p><b>{title}</b></p>
+        <p style='color:#888; font-size:0.9em;'>{f"Gene: {gene_name} | " if gene_name else ""}Method: {method}</p>
+        
+        <iframe src="https://www.rcsb.org/3d-view/{pdb_id}" 
+                style="width:100%; height:500px; border:none; border-radius:10px; margin-top:10px;">
+        </iframe>
+        
+        {other_structures}
+        
+        <p style='margin-top:10px;'>
+            <a href="https://www.rcsb.org/structure/{pdb_id}" target="_blank" style='color:#4ecdc4;'>🔗 View on RCSB PDB</a>
+        </p>
+        """
+        return html
+    
+    elif db_type == "uniprot" and data.get("accession"):
+        # For general info queries (isoforms, function descriptions, etc.), 
+        # the text answer is sufficient - no HTML card needed
+        if is_general_info and not (wants_sequence or wants_structure or wants_domains or wants_motifs):
+            return None
+        
+        accession = data.get("accession", "")
+        gene_name = data.get("gene_name", "Unknown")
+        protein_name = data.get("protein_name", "Unknown")
+        sequence = data.get("sequence", "")
+        seq_length = data.get("sequence_length", 0)
+        alphafold_url = data.get("alphafold_url", "")
+        
+        # Only build HTML for what the user actually asked about
+        
+        # If user wants sequence, show just the sequence
+        if wants_sequence and sequence:
+            formatted_seq = "<br>".join([sequence[i:i+60] for i in range(0, len(sequence), 60)])
+            html = f"""
+            <h3>🧬 {gene_name} Sequence ({seq_length} amino acids)</h3>
+            <p><b>UniProt:</b> {accession} | <b>Protein:</b> {protein_name}</p>
+            <div style='margin-top:10px; padding:12px; background:#1a1a2e; border-radius:8px; font-family:monospace; font-size:12px; word-break:break-all; line-height:1.6; max-height:400px; overflow-y:auto;'>
+                {formatted_seq}
+            </div>
+            <button onclick="navigator.clipboard.writeText(`{sequence}`)" 
+                    style='margin-top:8px; padding:6px 12px; background:#4ecdc4; color:#000; border:none; border-radius:4px; cursor:pointer;'>
+                📋 Copy Sequence
+            </button>
+            <p style='margin-top:10px;'>
+                <a href="https://www.uniprot.org/uniprotkb/{accession}" target="_blank" style='color:#4ecdc4;'>🔗 View on UniProt</a>
+            </p>
+            """
+            return html
+        
+        # If user wants motifs, show just motifs
+        if wants_motifs and data.get("motifs"):
+            motif_items = "".join([
+                f"<tr><td style='padding:6px;border:1px solid #555;'>{m.get('description', 'Unknown')}</td>"
+                f"<td style='padding:6px;border:1px solid #555;'>{m.get('start', '?')}-{m.get('end', '?')}</td></tr>"
+                for m in data["motifs"]
+            ])
+            html = f"""
+            <h3>📋 Motifs in {gene_name}</h3>
+            <p><b>UniProt:</b> {accession}</p>
+            <table style='width:100%; border-collapse:collapse; margin-top:10px;'>
+                <tr style='background:#444;'>
+                    <th style='padding:8px; border:1px solid #666;'>Motif</th>
+                    <th style='padding:8px; border:1px solid #666;'>Position</th>
+                </tr>
+                {motif_items}
+            </table>
+            """
+            return html
+        
+        # If user wants domains, show just domains
+        if wants_domains and data.get("domains"):
+            domain_items = "".join([
+                f"<tr><td style='padding:6px;border:1px solid #555;'>{d.get('description', 'Unknown')}</td>"
+                f"<td style='padding:6px;border:1px solid #555;'>{d.get('start', '?')}-{d.get('end', '?')}</td></tr>"
+                for d in data["domains"]
+            ])
+            html = f"""
+            <h3>🔷 Domains in {gene_name}</h3>
+            <p><b>UniProt:</b> {accession}</p>
+            <table style='width:100%; border-collapse:collapse; margin-top:10px;'>
+                <tr style='background:#444;'>
+                    <th style='padding:8px; border:1px solid #666;'>Domain</th>
+                    <th style='padding:8px; border:1px solid #666;'>Position</th>
+                </tr>
+                {domain_items}
+            </table>
+            """
+            return html
+        
+        # If user wants structure, show AlphaFold 3D viewer embedded
+        if wants_structure:
+            html = f"""
+            <h3>🔬 {gene_name} - 3D Structure</h3>
+            <p><b>UniProt:</b> {accession} | <b>Protein:</b> {protein_name}</p>
+            
+            <div style='margin-top:15px; background:#000; border-radius:10px; overflow:hidden;'>
+                <iframe src="https://alphafold.ebi.ac.uk/entry/{accession}" 
+                        style="width:100%; height:500px; border:none;">
+                </iframe>
+            </div>
+            <p style='color:#888; font-size:0.85em; text-align:center; margin-top:5px;'>
+                AlphaFold predicted structure • <a href="{alphafold_url}" target="_blank" style='color:#4ecdc4;'>Open in new tab</a>
+            </p>
+            
+            <p style='margin-top:12px;'>
+                <a href="https://www.uniprot.org/uniprotkb/{accession}" target="_blank" style='color:#4ecdc4;'>🔗 View on UniProt</a>
+            </p>
+            """
+            return html
+        
+        # For other specific queries, no HTML needed - text response is sufficient
+        return None
+    
+    elif db_type == "ncbi" and data.get("results"):
+        # Only show paper list if user asked for papers/publications
+        if not wants_papers:
+            return None
+            
+        results = data["results"]
+        items = ""
+        for i, r in enumerate(results[:10], 1):
+            title = r.get("title", "No title")
+            pmid = r.get("pmid", "")
+            link = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "#"
+            items += f"<li style='margin-bottom:8px;'><a href='{link}' target='_blank'>{i}. {title}</a></li>"
+        
+        html = f"<p>NCBI/PubMed results:</p><ol style='padding-left:20px;'>{items}</ol>"
+        return html
+    
+    elif db_type == "kegg" and data.get("pathways"):
+        # Only show pathway list if user asked for pathways
+        if not wants_pathways:
+            return None
+            
+        pathways = data["pathways"]
+        items = ""
+        for pid in pathways[:10]:
+            url = f"https://www.kegg.jp/dbget-bin/www_bget?{pid}"
+            items += f"<li style='margin-bottom:8px;'><a href='{url}' target='_blank'>{pid}</a></li>"
+        
+        html = f"<p>KEGG Pathways:</p><ol style='padding-left:20px;'>{items}</ol>"
+        return html
+    
+    elif db_type == "ensembl" and data.get("id"):
+        # Ensembl data is usually specific enough to not need HTML unless genomic coords requested
+        return None
+    
+    elif db_type == "pubchem" and data.get("cid"):
+        cid = data.get("cid")
+        name = data.get("name", data.get("query", "Compound"))
+        structure_img = data.get("structure_image_url", f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/PNG?image_size=300x300")
+        pubchem_url = data.get("pubchem_url", f"https://pubchem.ncbi.nlm.nih.gov/compound/{cid}")
+        molecular_formula = data.get("molecular_formula", "Unknown")
+        molecular_weight = data.get("molecular_weight", "Unknown")
+        smiles = data.get("canonical_smiles", "")
+        inchi_key = data.get("inchi_key", "")
+        show_3d = data.get("show_3d", False)
+        
+        # 2D structure section
+        structure_2d = f"""
+        <div style='text-align:center; margin:15px 0; padding:15px; background:#1a1a2e; border-radius:10px;'>
+            <img src="{structure_img}" alt="{name} structure" style="max-width:300px; border-radius:8px; background:#fff;">
+        </div>
+        """
+        
+        # 3D viewer using PubChem's 3D Viewer widget (always show both 2D and 3D when 3D requested)
+        viewer_3d = ""
+        if show_3d:
+            viewer_3d = f"""
+            <h4 style='margin-top:15px;'>🔬 3D Conformer</h4>
+            <div style='text-align:center; margin:10px 0; background:#000; border-radius:10px; overflow:hidden;'>
+                <iframe src="https://embed.molview.org/v1/?mode=balls&cid={cid}&bg=gray" 
+                        style="width:100%; height:400px; border:none;">
+                </iframe>
+            </div>
+            <p style='color:#888; font-size:0.85em; text-align:center;'>Drag to rotate • Scroll to zoom • Right-click to pan</p>
+            """
+        
+        html = f"""
+        <h3>🧪 {name} - Chemical Structure</h3>
+        
+        {structure_2d}
+        
+        {viewer_3d}
+        
+        <div style='margin-top:12px;'>
+            <p><b>CID:</b> {cid}</p>
+            <p><b>Molecular Formula:</b> {molecular_formula}</p>
+            <p><b>Molecular Weight:</b> {molecular_weight} g/mol</p>
+            {f"<p><b>SMILES:</b> <code style='background:#333; padding:2px 6px; border-radius:4px;'>{smiles}</code></p>" if smiles else ""}
+            {f"<p><b>InChIKey:</b> <code style='background:#333; padding:2px 6px; border-radius:4px;'>{inchi_key}</code></p>" if inchi_key else ""}
+        </div>
+        
+        <p style='margin-top:12px;'>
+            <a href="{pubchem_url}" target="_blank" style='color:#4ecdc4;'>🔗 View on PubChem</a>
+            {f" | <a href='{pubchem_url}#section=3D-Conformer' target='_blank' style='color:#4ecdc4; margin-left:10px;'>🔬 Full 3D Viewer</a>" if show_3d else f" | <a href='{pubchem_url}#section=3D-Conformer' target='_blank' style='color:#4ecdc4; margin-left:10px;'>🔬 View 3D Structure</a>"}
+        </p>
+        """
+        return html
+    
+    return None
