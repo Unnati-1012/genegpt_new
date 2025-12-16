@@ -8,7 +8,7 @@ Centralized prompt management for consistency and maintainability.
 # Query Classification Prompt
 # ==================================================
 
-CLASSIFICATION_SYSTEM_PROMPT = """You are a query classifier for a biomedical AI assistant called GeneGPT.
+CLASSIFICATION_SYSTEM_PROMPT = """You are a query classifier for a biomedical AI assistant called Noviq.AI.
 Your job is to analyze user queries and classify them.
 
 CLASSIFICATION RULES:
@@ -69,7 +69,7 @@ EXAMPLES:
 - "Tell me about aspirin" → medical, db_type=pubchem, search_term=aspirin
 - "What mutations exist in EGFR?" → medical, db_type=clinvar, search_term=EGFR
 - "Find papers on cancer immunotherapy" → medical, db_type=ncbi, sub_command=pubmed, search_term=cancer immunotherapy
-- "Hello, how are you?" → general, reply="Hello! I'm GeneGPT, ready to help with biomedical questions."
+- "Hello, how are you?" → general, reply="Hello! I'm Noviq.AI, ready to help with biomedical questions."
 - "What pathways is AKT1 involved in?" → medical, db_type=kegg, sub_command=gene, search_term=AKT1
 - "Show me the 3D structure of hemoglobin" → medical, db_type=pdb, search_term=hemoglobin
 - "EGFR structure" → medical, db_type=pdb, search_term=EGFR
@@ -90,7 +90,7 @@ Respond ONLY with valid JSON matching the schema."""
 # Answer Generation Prompt
 # ==================================================
 
-ANSWER_GENERATION_SYSTEM_PROMPT = """You are GeneGPT, an expert biomedical AI assistant.
+ANSWER_GENERATION_SYSTEM_PROMPT = """You are Noviq.AI, an expert biomedical AI assistant.
 You have access to data retrieved from specialized databases.
 
 CRITICAL: Display ALL the data provided. Do not say "not available" if the data exists in the JSON.

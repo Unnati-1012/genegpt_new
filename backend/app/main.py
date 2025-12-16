@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 import pathlib
 import re
+from typing import Optional, List
 
 # Path: backend/app/main.py
 # Move UP one directory to reach backend/
@@ -12,7 +13,7 @@ print("Loading .env from:", ENV_PATH)
 load_dotenv(ENV_PATH)
 print("Loaded GOOGLE_API_KEY:", os.environ.get("GOOGLE_API_KEY"))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -30,6 +31,9 @@ from .clinvar_tools import ClinVarTools
 
 # NEW: Import the uniprot handler for isoform queries
 from .db_handlers.uniprot_handler import fetch_uniprot as fetch_uniprot_handler
+
+# NEW: Document processor for image/PDF handling
+from .document_processor import process_uploaded_file, clean_ocr_text
 
 # Initialize tools
 pubchem = PubChemTools()
@@ -587,6 +591,146 @@ async def chat(req: ChatRequest):
     result = await process_single_query(msg, messages)
     logger.response_sent(has_html=bool(result.get("html")), reply_length=len(result.get("reply", "")))
     return result
+
+
+# -------------------------------------------------
+# FILE UPLOAD ENDPOINT (for images/documents)
+# -------------------------------------------------
+@app.post("/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    query: str = Form(default=""),
+    history: str = Form(default="[]")
+):
+    """
+    Handle file upload with optional text query.
+    Extracts text from images (OCR) and documents (PDF).
+    """
+    import json
+    
+    try:
+        logger.separator("FILE UPLOAD")
+        logger.info(f"Received file: {file.filename}, content_type: {file.content_type}")
+        
+        # Read file content
+        file_bytes = await file.read()
+        logger.info(f"Read {len(file_bytes)} bytes from file")
+        
+        # Process the file
+        file_result = process_uploaded_file(file_bytes, file.filename, file.content_type)
+        file_type = file_result.get("file_type", "file")
+        
+        if not file_result["success"] and not file_result["text"]:
+            return {
+                "reply": f"❌ Could not process the file: {file_result['error']}",
+                "html": None
+            }
+        
+        # Build the query with extracted text
+        extracted_text = clean_ocr_text(file_result["text"]) if file_result["text"] else ""
+        
+        if extracted_text:
+            logger.info(f"Extracted {len(extracted_text)} chars from {file_type}")
+            
+            # Use more of the extracted text (up to 20000 chars)
+            text_to_analyze = extracted_text[:20000]
+            
+            # Combine user query with extracted text
+            if query:
+                combined_query = f"""The user uploaded a {file_type} file named "{file.filename}" and asked: "{query}"
+
+Here is the COMPLETE text extracted from the file:
+---
+{text_to_analyze}
+---
+
+Please analyze this content thoroughly and answer the user's question. If it's a presentation, explain each slide/section in detail."""
+            else:
+                combined_query = f"""The user uploaded a {file_type} file named "{file.filename}". Here is the COMPLETE text extracted from it:
+---
+{text_to_analyze}
+---
+
+Please provide a comprehensive analysis of this document:
+1. If it's a presentation, explain each slide in detail
+2. Summarize the main topics and key points
+3. If it contains biomedical information, provide relevant insights
+4. If it appears to be questions or a quiz, answer them thoroughly"""
+            
+            # Parse conversation history
+            try:
+                conv_messages = json.loads(history)
+            except:
+                conv_messages = []
+            
+            # For document uploads, bypass the classifier and send directly to LLM
+            # This ensures document analysis always works regardless of content type
+            logger.info("Processing document upload - bypassing classifier for direct LLM analysis")
+            
+            # Build messages for LLM
+            llm_messages = [
+                {"role": "system", "content": f"You are a helpful assistant analyzing an uploaded document. The user uploaded a {file_type} file named '{file.filename}'. Provide detailed, comprehensive analysis of the document content. If it's a presentation, explain each slide. If it contains code, explain what it does. If it has questions, answer them."},
+                *conv_messages[-10:],  # Include recent conversation
+                {"role": "user", "content": combined_query}
+            ]
+            
+            # Direct LLM call for document analysis
+            try:
+                from .llm_client import LLMClient
+                llm = LLMClient()
+                
+                # Use the generation model for document analysis
+                response = llm.client.chat.completions.create(
+                    model=llm.generation_model,
+                    messages=llm_messages,
+                    temperature=0.3,
+                    max_tokens=4000
+                )
+                reply = response.choices[0].message.content
+                logger.info(f"Document analysis completed successfully, {len(reply)} chars response")
+            except Exception as e:
+                logger.error(f"LLM error during document analysis: {e}")
+                import traceback
+                traceback.print_exc()
+                
+                # Provide a fallback summary based on the extracted text
+                reply = f"""## Document Summary
+
+**File:** {file.filename}
+**Type:** {file_type.upper()}
+**Content Length:** {len(extracted_text)} characters
+
+### Extracted Content:
+
+{text_to_analyze[:3000]}
+
+---
+*Note: Automatic analysis failed. Above is the raw extracted content.*"""
+            
+            # Add a note about the file
+            file_note = f"📎 *Processed {file_type.upper()}: {file.filename}* ({len(extracted_text)} characters extracted)\n\n"
+            
+            return {
+                "reply": file_note + reply,
+                "html": None,
+                "document_context": text_to_analyze[:10000]
+            }
+        
+        else:
+            # No text extracted - inform user
+            return {
+                "reply": f"📎 Received file: **{file.filename}**\n\n⚠️ {file_result.get('error', 'Could not extract text from this file.')}",
+                "html": None
+            }
+    
+    except Exception as e:
+        logger.error(f"Upload endpoint error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "reply": f"❌ Error processing upload: {str(e)}",
+            "html": None
+        }
 
 
 # -------------------------------------------------

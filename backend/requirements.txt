@@ -6,4 +6,8 @@ pydantic
 starlette
 requests
 groq
+python-multipart
+Pillow
+PyPDF2
+pytesseract
 

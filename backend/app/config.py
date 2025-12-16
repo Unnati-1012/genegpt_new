@@ -1,6 +1,6 @@
 # backend/app/config.py
 """
-Configuration and environment setup for GeneGPT.
+Configuration and environment setup for Noviq.AI.
 """
 
 import os
@@ -13,6 +13,13 @@ from dotenv import load_dotenv
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 ENV_PATH = BASE_DIR / ".env"
 FRONTEND_DIR = BASE_DIR.parent / "frontend" / "static"
+
+# -------------------------------------------------
+# TESSERACT OCR PATH (Windows)
+# -------------------------------------------------
+TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+if os.path.exists(TESSERACT_PATH):
+    os.environ["TESSERACT_CMD"] = TESSERACT_PATH
 
 # -------------------------------------------------
 # LOAD ENVIRONMENT

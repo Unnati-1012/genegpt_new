@@ -40,7 +40,7 @@ class Colors:
     BG_BLUE = "\033[44m"
 
 
-class GeneGPTFormatter(logging.Formatter):
+class NoviqFormatter(logging.Formatter):
     """Custom formatter with colors and emojis for different log levels and categories."""
     
     LEVEL_COLORS = {
@@ -70,12 +70,12 @@ class GeneGPTFormatter(logging.Formatter):
         return formatted
 
 
-class GeneGPTLogger:
+class NoviqLogger:
     """
-    Centralized logger for GeneGPT with specialized logging methods.
+    Centralized logger for Noviq.AI with specialized logging methods.
     """
     
-    def __init__(self, name: str = "GeneGPT"):
+    def __init__(self, name: str = "Noviq.AI"):
         self.logger = logging.getLogger(name)
         self.logger.setLevel(logging.DEBUG)
         
@@ -85,7 +85,7 @@ class GeneGPTLogger:
         # Console handler with custom formatter
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(logging.DEBUG)
-        console_handler.setFormatter(GeneGPTFormatter())
+        console_handler.setFormatter(NoviqFormatter())
         
         self.logger.addHandler(console_handler)
         
@@ -289,9 +289,9 @@ class GeneGPTLogger:
 
 
 # Global logger instance
-logger = GeneGPTLogger()
+logger = NoviqLogger()
 
 
 # Convenience function to get the logger
-def get_logger() -> GeneGPTLogger:
+def get_logger() -> NoviqLogger:
     return logger

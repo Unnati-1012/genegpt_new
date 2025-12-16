@@ -52,7 +52,7 @@ class LLMClient:
     def _classify_sync(self, query: str, conversation_history: list = None) -> QueryClassification:
         """Synchronous classification using structured JSON output."""
         
-        system_prompt = """You are a query classifier for a biomedical AI assistant called GeneGPT.
+        system_prompt = """You are a query classifier for a biomedical AI assistant called Noviq.AI.
 Your job is to analyze user queries and classify them.
 
 CLASSIFICATION RULES:
@@ -135,7 +135,7 @@ EXAMPLES:
 - "Tell me about aspirin" → medical, db_type=pubchem, search_term=aspirin
 - "What mutations exist in EGFR?" → medical, db_type=clinvar, search_term=EGFR
 - "Find papers on cancer immunotherapy" → medical, db_type=ncbi, sub_command=pubmed, search_term=cancer immunotherapy
-- "Hello, how are you?" → general, reply="Hello! I'm GeneGPT, ready to help with biomedical questions."
+- "Hello, how are you?" → general, reply="Hello! I'm Noviq.AI, ready to help with biomedical questions."
 - [After discussing TP53] "what is the name of this protein?" → medical, db_type=uniprot, search_term=TP53
 - [After asking about 1A1U] "what protein is this?" → medical, db_type=pdb, search_term=1A1U
 - "What pathways is AKT1 involved in?" → medical, db_type=kegg, sub_command=gene, search_term=AKT1
@@ -228,7 +228,7 @@ Respond ONLY with valid JSON matching the schema."""
     ) -> str:
         """Synchronous answer generation with database context."""
         
-        system_prompt = """You are GeneGPT, an expert biomedical AI assistant.
+        system_prompt = """You are Noviq.AI, an expert biomedical AI assistant.
 You have access to data retrieved from specialized databases.
 
 YOUR OUTPUT RULES - FOLLOW STRICTLY:

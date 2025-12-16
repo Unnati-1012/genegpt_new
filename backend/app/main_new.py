@@ -43,7 +43,7 @@ def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     
     app = FastAPI(
-        title="GeneGPT",
+        title="Noviq.AI",
         description="Biomedical chatbot with database routing",
         version="1.0.0",
     )
