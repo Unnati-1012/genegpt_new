@@ -11,3 +11,11 @@ Pillow
 PyPDF2
 pytesseract
 
+# Authentication & Security
+bcrypt
+passlib[bcrypt]
+python-jose[cryptography]
+
+# Database
+sqlalchemy
+aiosqlite

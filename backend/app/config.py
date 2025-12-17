@@ -5,6 +5,7 @@ Configuration and environment setup for Noviq.AI.
 
 import os
 import pathlib
+import secrets
 from dotenv import load_dotenv
 
 # -------------------------------------------------
@@ -13,6 +14,10 @@ from dotenv import load_dotenv
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 ENV_PATH = BASE_DIR / ".env"
 FRONTEND_DIR = BASE_DIR.parent / "frontend" / "static"
+DATABASE_DIR = BASE_DIR / "data"
+
+# Ensure data directory exists
+DATABASE_DIR.mkdir(exist_ok=True)
 
 # -------------------------------------------------
 # TESSERACT OCR PATH (Windows)
@@ -53,6 +58,35 @@ class Settings:
     CORS_ORIGINS: list = ["*"]
     CORS_METHODS: list = ["*"]
     CORS_HEADERS: list = ["*"]
+    
+    # -------------------------------------------------
+    # DATABASE SETTINGS
+    # -------------------------------------------------
+    DATABASE_URL: str = os.environ.get(
+        "DATABASE_URL", 
+        f"sqlite+aiosqlite:///{DATABASE_DIR}/noviqai.db"
+    )
+    DATABASE_ECHO: bool = os.environ.get("DATABASE_ECHO", "false").lower() == "true"
+    
+    # -------------------------------------------------
+    # JWT AUTHENTICATION SETTINGS
+    # -------------------------------------------------
+    # Secret key for JWT encoding/decoding
+    # Generate a secure key: python -c "import secrets; print(secrets.token_hex(32))"
+    JWT_SECRET_KEY: str = os.environ.get(
+        "JWT_SECRET_KEY",
+        secrets.token_hex(32)  # Auto-generate if not set (not recommended for production)
+    )
+    JWT_ALGORITHM: str = "HS256"
+    
+    # Token expiration times
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(
+        os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "60")  # 1 hour
+    )
+    REFRESH_TOKEN_EXPIRE_DAYS: int = int(
+        os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", "7")  # 7 days
+    )
 
 
 settings = Settings()
+

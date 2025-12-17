@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 import pathlib
 import re
 from typing import Optional, List
+from contextlib import asynccontextmanager
 
 # Path: backend/app/main.py
 # Move UP one directory to reach backend/
@@ -35,6 +36,10 @@ from .db_handlers.uniprot_handler import fetch_uniprot as fetch_uniprot_handler
 # NEW: Document processor for image/PDF handling
 from .document_processor import process_uploaded_file, clean_ocr_text
 
+# NEW: Authentication module
+from .auth.database import init_db, close_db
+from .auth.routes import router as auth_router
+
 # Initialize tools
 pubchem = PubChemTools()
 string_db = STRINGTools()
@@ -63,12 +68,35 @@ logger = get_logger()
 FRONTEND_DIR = BASE_DIR.parent / "frontend" / "static"
 logger.info(f"Serving static from: {FRONTEND_DIR}")
 
+
+# -------------------------------------------------
+# LIFESPAN (Database initialization)
+# -------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan - initialize and cleanup resources."""
+    # Startup
+    logger.info("Initializing database...")
+    await init_db()
+    logger.info("Database initialized successfully")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Closing database connections...")
+    await close_db()
+    logger.info("Database connections closed")
+
+
 # -------------------------------------------------
 # APP
 # -------------------------------------------------
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 llm = LLMClient()
 db_router = DatabaseRouter()  # NEW: Intelligent database router
+
+# Include authentication router
+app.include_router(auth_router, prefix="/api")
 
 
 # -------------------------------------------------
